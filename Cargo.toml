@@ -1,0 +1,2 @@
+[workspace]
+members = ["lecture2", "bril/bril-rs/bril2json"]
