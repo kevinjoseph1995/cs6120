@@ -1,2 +1,2 @@
 [workspace]
-members = ["lecture2", "bril/bril-rs/bril2json"]
+members = ["lecture2", "bril/bril-rs/bril2json", "common"]
