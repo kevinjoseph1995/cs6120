@@ -1,8 +1,6 @@
-use std::{collections::HashMap, fmt::Debug};
-
-use bril_rs::{Code, Instruction};
-use indoc::indoc;
+use bril_rs::{Code, Instruction, Program};
 use smallvec::SmallVec;
+use std::{collections::HashMap, error::Error, fmt::Display};
 
 #[derive(Debug)]
 pub struct BasicBlock<'a> {
@@ -16,10 +14,71 @@ pub struct Cfg<'a> {
     pub underlying_basic_blocks: &'a [BasicBlock<'a>],
 }
 
-pub fn construct_cfg<'a>(basic_blocks: &'a [BasicBlock<'a>]) -> Option<Cfg<'a>> {
-    if basic_blocks.is_empty() {
-        return None;
+pub fn construct_basic_block_stream<'a>(instructions: &'a [Code]) -> Vec<BasicBlock<'a>> {
+    let mut current_basic_block_start: usize = 0;
+    let mut blocks: Vec<BasicBlock<'a>> = Vec::new();
+    let get_current_label = |index: usize, current_label: Option<&str>| -> String {
+        if let Some(l) = current_label {
+            l.to_string()
+        } else {
+            format!("label_{}", index)
+        }
+    };
+    let mut current_label: Option<&str> = None;
+    for (index, instruction) in instructions.iter().enumerate() {
+        match instruction {
+            Code::Label { label, pos: _ } => {
+                if index != current_basic_block_start {
+                    blocks.push(BasicBlock {
+                        name: get_current_label(index, current_label.clone()),
+                        instruction_stream: &instructions[current_basic_block_start..index],
+                    });
+                }
+
+                current_label = Some(label.as_str());
+                current_basic_block_start = index + 1;
+
+                continue;
+            }
+            Code::Instruction(instrctuion) => match instrctuion {
+                Instruction::Effect {
+                    args: _,
+                    funcs: _,
+                    labels: _,
+                    op,
+                    pos: _,
+                } => match op {
+                    bril_rs::EffectOps::Jump
+                    | bril_rs::EffectOps::Branch
+                    | bril_rs::EffectOps::Return => {
+                        blocks.push(BasicBlock {
+                            name: get_current_label(index, current_label.clone()),
+                            instruction_stream: &instructions[current_basic_block_start..index + 1],
+                        });
+
+                        current_label = None;
+                        current_basic_block_start = index + 1;
+                    }
+                    _ => {
+                        continue;
+                    }
+                },
+                _ => {
+                    continue;
+                }
+            },
+        };
     }
+    if current_basic_block_start < instructions.len() {
+        blocks.push(BasicBlock {
+            name: get_current_label(current_basic_block_start, current_label.clone()),
+            instruction_stream: &instructions[current_basic_block_start..],
+        });
+    }
+    return blocks;
+}
+
+pub fn construct_cfg<'a>(basic_blocks: &'a [BasicBlock<'a>]) -> Cfg<'a> {
     let label_map = {
         // Construct map of label name to index
         let mut label_map: HashMap<&str, usize> = HashMap::new();
@@ -97,10 +156,10 @@ pub fn construct_cfg<'a>(basic_blocks: &'a [BasicBlock<'a>]) -> Option<Cfg<'a>> 
         }
     }
     assert_eq!(basic_blocks.len(), adjacency_list_per_vertex.len());
-    Some(Cfg {
+    Cfg {
         adjacency_list_per_vertex,
         underlying_basic_blocks: basic_blocks,
-    })
+    }
 }
 
 impl<'a> std::fmt::Display for Cfg<'a> {
@@ -140,121 +199,71 @@ impl<'a> Cfg<'a> {
     }
 }
 
-pub fn construct_basic_block_stream<'a>(instructions: &'a [Code]) -> Vec<BasicBlock<'a>> {
-    let mut current_basic_block_start: usize = 0;
-    let mut blocks: Vec<BasicBlock<'a>> = Vec::new();
-    let get_current_label = |index: usize, current_label: Option<&str>| -> String {
-        if let Some(l) = current_label {
-            l.to_string()
-        } else {
-            format!("label_{}", index)
+#[derive(Debug)]
+struct ParseError {
+    message: String,
+}
+
+impl Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ParseError {}", self.message)
+    }
+}
+
+impl Error for ParseError {}
+
+pub fn parse_bril_text<'a>(bril_text: &'a str) -> Result<Program, Box<dyn Error>> {
+    let parser = bril2json::bril_grammar::AbstractProgramParser::new();
+    let abstract_program = match parser.parse(
+        &bril2json::Lines::new(bril_text, true, true, None),
+        bril_text,
+    ) {
+        Ok(program) => program,
+        Err(error) => {
+            return Err(Box::new(ParseError {
+                message: error.to_string(),
+            }));
         }
     };
-    let mut current_label: Option<&str> = None;
-    for (index, instruction) in instructions.iter().enumerate() {
-        match instruction {
-            Code::Label { label, pos: _ } => {
-                if index != current_basic_block_start {
-                    blocks.push(BasicBlock {
-                        name: get_current_label(index, current_label.clone()),
-                        instruction_stream: &instructions[current_basic_block_start..index],
-                    });
-                }
-
-                current_label = Some(label.as_str());
-                current_basic_block_start = index + 1;
-
-                continue;
-            }
-            Code::Instruction(instrctuion) => match instrctuion {
-                Instruction::Effect {
-                    args: _,
-                    funcs: _,
-                    labels: _,
-                    op,
-                    pos: _,
-                } => match op {
-                    bril_rs::EffectOps::Jump
-                    | bril_rs::EffectOps::Branch
-                    | bril_rs::EffectOps::Return => {
-                        blocks.push(BasicBlock {
-                            name: get_current_label(index, current_label.clone()),
-                            instruction_stream: &instructions[current_basic_block_start..index + 1],
-                        });
-
-                        current_label = None;
-                        current_basic_block_start = index + 1;
-                    }
-                    _ => {
-                        continue;
-                    }
-                },
-                _ => {
-                    continue;
-                }
-            },
-        };
-    }
-    if current_basic_block_start < instructions.len() {
-        blocks.push(BasicBlock {
-            name: get_current_label(current_basic_block_start, current_label.clone()),
-            instruction_stream: &instructions[current_basic_block_start..],
-        });
-    }
-    return blocks;
+    let json_string = serde_json::to_string(&abstract_program)?;
+    Ok(serde_json::from_str(&json_string)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bril_rs::Program;
-    use indoc::indoc;
 
-    const BRIL_PROGRAM_TEXT: &'static str = indoc! {r#"
-    @main(b0: bool, b1: bool) {
-        jmp .start;
-    .end:
-        print x_0_2;
-        print x_1_2;
-        ret;
-    .l_1_3:
-        jmp .end;
-    .l_1_2:
-        x_1_2 : int = const 0;
-        jmp .l_1_3;
-    .l_1_1:
-        x_1_1 : int = const 1;
-        jmp .l_1_3;
-    .l_0_3:
-        br b1 .l_1_1 .l_1_2;
-    .l_0_2:
-        x_0_2 : int = const 2;
-        jmp .l_0_3;
-    .l_0_1:
-        x_0_1 : int = const 3;
-        jmp .l_0_3;
-    .start:
-        br b0 .l_0_1 .l_0_2;
-    }
-"#};
-
-    fn get_test_program() -> Program {
-        let parser = bril2json::bril_grammar::AbstractProgramParser::new();
-        let abstract_program = parser
-            .parse(
-                &bril2json::Lines::new(BRIL_PROGRAM_TEXT, true, true, None),
-                BRIL_PROGRAM_TEXT,
-            )
-            .unwrap();
-        let json_string =
-            serde_json::to_string(&abstract_program).expect("Failed to serialized to JSON string");
-        return serde_json::from_str(&json_string)
-            .expect("Failed to parse JSON string to a Brill Program");
-    }
+    const BRIL_PROGRAM_TEXT: &'static str = indoc::indoc! {r#"
+        @main(b0: bool, b1: bool) {
+            jmp .start;
+        .end:
+            print x_0_2;
+            print x_1_2;
+            ret;
+        .l_1_3:
+            jmp .end;
+        .l_1_2:
+            x_1_2 : int = const 0;
+            jmp .l_1_3;
+        .l_1_1:
+            x_1_1 : int = const 1;
+            jmp .l_1_3;
+        .l_0_3:
+            br b1 .l_1_1 .l_1_2;
+        .l_0_2:
+            x_0_2 : int = const 2;
+            jmp .l_0_3;
+        .l_0_1:
+            x_0_1 : int = const 3;
+            jmp .l_0_3;
+        .start:
+            br b0 .l_0_1 .l_0_2;
+        }
+    "#};
 
     #[test]
     fn test_block_map_formation() {
-        let program = get_test_program();
+        let program = parse_bril_text(BRIL_PROGRAM_TEXT).unwrap();
         for function in &program.functions {
             let blocks = construct_basic_block_stream(&function.instrs);
             println!("{:#?}", blocks);
@@ -263,12 +272,10 @@ mod tests {
 
     #[test]
     fn test_cfg_construction() {
-        let program = get_test_program();
+        let program = parse_bril_text(BRIL_PROGRAM_TEXT).unwrap();
         for function in &program.functions {
             let basic_blocks = construct_basic_block_stream(&function.instrs);
             let cfg = construct_cfg(&basic_blocks);
-            assert!(cfg.is_some());
-            let cfg = cfg.unwrap();
             println!("{}", cfg.get_dot_representation());
         }
     }

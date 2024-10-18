@@ -1,10 +1,11 @@
 [package]
-name = "lecture2"
+name = "optimizations"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde_json = "1.0"
+clap = "4.5.20"
+common = { version = "0.1.0", path = "../common" }
 
 [dependencies.bril-rs]
 version = "0.1.0"

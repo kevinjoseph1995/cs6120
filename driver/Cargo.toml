@@ -1,0 +1,9 @@
+[package]
+name = "driver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.20", features = ["derive"] }
+common = { version = "0.1.0", path = "../common" }
+optimizations = { version = "0.1.0", path = "../optimizations" }
