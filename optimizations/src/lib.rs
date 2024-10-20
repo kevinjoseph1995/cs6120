@@ -76,7 +76,6 @@ mod local_dead_code_elimination {
         let mut instuction_stream = block.instruction_stream.clone();
         loop {
             // Iterate in a loop till convergence
-
             // We need to find all the dead stores
             let mut last_defined = HashMap::<&str, usize>::new();
             let mut deletion_mask = Vec::<bool>::new();
@@ -90,7 +89,7 @@ mod local_dead_code_elimination {
                 };
                 // Check for loads
                 for variable_loaded in get_load_sources(&instruction) {
-                    last_defined.remove(variable_loaded.as_str());
+                    let _ = last_defined.remove(variable_loaded.as_str());
                 }
                 // Check for stores
                 let variable_stored = get_store_destination(&instruction);
@@ -105,7 +104,12 @@ mod local_dead_code_elimination {
                     last_defined.insert(variable_stored.unwrap(), index);
                 }
             }
-            if atleast_one_marked_for_deleteion {
+            // Iterate through all the stores that were not read from
+            for (_label, index) in last_defined {
+                deletion_mask[index] = true;
+                atleast_one_marked_for_deleteion = true;
+            }
+            if !atleast_one_marked_for_deleteion {
                 // We have converged. No more dead stores in this local block
                 break;
             }
@@ -120,7 +124,10 @@ mod local_dead_code_elimination {
                 new_instruction_stream
             };
         }
-        return BasicBlock{ name: block.name.clone(), instruction_stream: instuction_stream };
+        return BasicBlock {
+            name: block.name.clone(),
+            instruction_stream: instuction_stream,
+        };
     }
 
     pub fn apply(program: &mut Program) {
@@ -155,7 +162,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_local_dead_code_elimination() {
+    fn test_local_dead_code_elimination_1() {
         const BRIL_PROGRAM_TEXT: &'static str = indoc::indoc! {r#"
             @main() {
                 v0: int = const 1;
@@ -168,6 +175,67 @@ mod tests {
         assert!(program.is_ok());
         let mut program = program.unwrap();
         OptimizationPass::LocalDeadCodeElimination.apply(&mut program);
-        println!("{}", program);
+        assert!(program.functions[0].instrs.is_empty());
+    }
+    #[test]
+    fn test_local_dead_code_elimination_2() {
+        const BRIL_PROGRAM_TEXT: &'static str = indoc::indoc! {r#"
+            @main() {
+                v0: int = const 1;
+                v1: int = const 2;
+                v3: int = const 3;
+                v2: int = add v0 v1;
+                ret v2;
+            }
+        "#};
+        let program = common::parse_bril_text(&BRIL_PROGRAM_TEXT);
+        assert!(program.is_ok());
+        let mut program = program.unwrap();
+        OptimizationPass::LocalDeadCodeElimination.apply(&mut program);
+        assert!(program.functions[0].instrs.len() == 4); // "v3: int = const 3;" is a dead store and will get deleted
+    }
+
+    #[test]
+    fn test_local_dead_code_elimination_3() {
+        const BRIL_PROGRAM_TEXT: &'static str = indoc::indoc! {r#"
+            @main {
+            a: int = const 100;
+            a: int = const 42;
+            print a;
+            }
+        "#};
+        let program = common::parse_bril_text(&BRIL_PROGRAM_TEXT);
+        assert!(program.is_ok());
+        let mut program = program.unwrap();
+        OptimizationPass::LocalDeadCodeElimination.apply(&mut program);
+        assert!(program.functions[0].instrs.len() == 2); // "a: int = const 100"; is a dead store and will get deleted
+    }
+
+    #[test]
+    fn test_local_dead_code_elimination_4() {
+        const BRIL_PROGRAM_TEXT: &'static str = indoc::indoc! {r#"
+            @main {
+                a: int = const 4;
+                b: int = const 2;
+                jmp .end;
+                print b;
+                .end:
+                print a;
+            }
+        "#};
+        let program = common::parse_bril_text(&BRIL_PROGRAM_TEXT);
+        assert!(program.is_ok());
+        let mut program = program.unwrap();
+        OptimizationPass::LocalDeadCodeElimination.apply(&mut program);
+        /*
+        Output program:
+        @main {
+            jmp .end;
+            print b;
+            .end:
+            print a;
+        }
+        */
+        assert!(program.functions[0].instrs.len() == 4);
     }
 }
