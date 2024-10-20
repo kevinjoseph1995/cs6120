@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 clap = "4.5.20"
 common = { version = "0.1.0", path = "../common" }
+indoc = "2.0.5"
 
 [dependencies.bril-rs]
 version = "0.1.0"

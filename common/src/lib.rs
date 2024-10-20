@@ -1,37 +1,29 @@
 use bril_rs::{Code, Instruction, Program};
-use smallvec::SmallVec;
 use std::{collections::HashMap, error::Error, fmt::Display};
 
-#[derive(Debug)]
-pub struct BasicBlock<'a> {
-    pub name: String,
-    pub instruction_stream: &'a [Code],
+#[derive(Debug, Clone)]
+pub struct BasicBlock {
+    pub name: Option<String>,
+    pub instruction_stream: Vec<Code>,
 }
 
 #[derive(Default)]
-pub struct Cfg<'a> {
-    pub adjacency_list_per_vertex: Vec<SmallVec<[usize; 4]>>,
-    pub underlying_basic_blocks: &'a [BasicBlock<'a>],
+pub struct Cfg {
+    pub adjacency_list_per_vertex: Vec<Vec<usize>>,
+    pub underlying_basic_blocks: Vec<BasicBlock>,
 }
 
-pub fn construct_basic_block_stream<'a>(instructions: &'a [Code]) -> Vec<BasicBlock<'a>> {
+pub fn construct_basic_block_stream<'a>(instructions: &'a [Code]) -> Vec<BasicBlock> {
     let mut current_basic_block_start: usize = 0;
-    let mut blocks: Vec<BasicBlock<'a>> = Vec::new();
-    let get_current_label = |index: usize, current_label: Option<&str>| -> String {
-        if let Some(l) = current_label {
-            l.to_string()
-        } else {
-            format!("label_{}", index)
-        }
-    };
+    let mut blocks: Vec<BasicBlock> = Vec::new();
     let mut current_label: Option<&str> = None;
     for (index, instruction) in instructions.iter().enumerate() {
         match instruction {
             Code::Label { label, pos: _ } => {
                 if index != current_basic_block_start {
                     blocks.push(BasicBlock {
-                        name: get_current_label(index, current_label.clone()),
-                        instruction_stream: &instructions[current_basic_block_start..index],
+                        name: current_label.map(|s| s.to_string()),
+                        instruction_stream: instructions[current_basic_block_start..index].to_vec(),
                     });
                 }
 
@@ -52,8 +44,9 @@ pub fn construct_basic_block_stream<'a>(instructions: &'a [Code]) -> Vec<BasicBl
                     | bril_rs::EffectOps::Branch
                     | bril_rs::EffectOps::Return => {
                         blocks.push(BasicBlock {
-                            name: get_current_label(index, current_label.clone()),
-                            instruction_stream: &instructions[current_basic_block_start..index + 1],
+                            name: current_label.map(|s| s.to_string()),
+                            instruction_stream: instructions[current_basic_block_start..index + 1]
+                                .to_vec(),
                         });
 
                         current_label = None;
@@ -71,25 +64,27 @@ pub fn construct_basic_block_stream<'a>(instructions: &'a [Code]) -> Vec<BasicBl
     }
     if current_basic_block_start < instructions.len() {
         blocks.push(BasicBlock {
-            name: get_current_label(current_basic_block_start, current_label.clone()),
-            instruction_stream: &instructions[current_basic_block_start..],
+            name: current_label.map(|s| s.to_string()),
+            instruction_stream: instructions[current_basic_block_start..].to_vec(),
         });
     }
     return blocks;
 }
 
-pub fn construct_cfg<'a>(basic_blocks: &'a [BasicBlock<'a>]) -> Cfg<'a> {
+pub fn construct_cfg<'a>(basic_blocks: &[BasicBlock]) -> Cfg {
     let label_map = {
         // Construct map of label name to index
         let mut label_map: HashMap<&str, usize> = HashMap::new();
         label_map.reserve(basic_blocks.len());
         for (index, block) in (&basic_blocks).iter().enumerate() {
-            label_map.insert(&block.name, index);
+            if let Some(name) = &block.name {
+                label_map.insert(name.as_str(), index);
+            }
         }
         label_map
     };
 
-    let mut adjacency_list_per_vertex: Vec<SmallVec<[usize; 4]>> = Vec::new();
+    let mut adjacency_list_per_vertex: Vec<Vec<usize>> = Vec::new();
     adjacency_list_per_vertex.reserve(basic_blocks.len());
 
     for (index, block) in (&basic_blocks).iter().enumerate() {
@@ -115,21 +110,21 @@ pub fn construct_cfg<'a>(basic_blocks: &'a [BasicBlock<'a>]) -> Cfg<'a> {
             } => (op, labels),
             _ => {
                 if index < basic_blocks.len() - 1 {
-                    adjacency_list_per_vertex.push(smallvec::smallvec![index + 1]);
+                    adjacency_list_per_vertex.push(vec![index + 1]);
                 }
                 continue;
             }
         };
         match effect_instruction_op {
             bril_rs::EffectOps::Return => {
-                adjacency_list_per_vertex.push(smallvec::smallvec![]);
+                adjacency_list_per_vertex.push(vec![]);
             }
             bril_rs::EffectOps::Jump => {
                 assert!(
                     destination_labels.len() == 1,
                     "Invalid number of destination labels for EffectOps::Jump"
                 );
-                adjacency_list_per_vertex.push(smallvec::smallvec![label_map
+                adjacency_list_per_vertex.push(vec![label_map
                     .get(destination_labels[0].as_str())
                     .unwrap()
                     .clone()])
@@ -139,7 +134,7 @@ pub fn construct_cfg<'a>(basic_blocks: &'a [BasicBlock<'a>]) -> Cfg<'a> {
                     destination_labels.len() == 2,
                     "Invalid number of destination labels for EffectOps::Branch"
                 );
-                adjacency_list_per_vertex.push(smallvec::smallvec![
+                adjacency_list_per_vertex.push(vec![
                     label_map
                         .get(destination_labels[0].as_str())
                         .unwrap()
@@ -147,25 +142,25 @@ pub fn construct_cfg<'a>(basic_blocks: &'a [BasicBlock<'a>]) -> Cfg<'a> {
                     label_map
                         .get(destination_labels[1].as_str())
                         .unwrap()
-                        .clone()
+                        .clone(),
                 ])
             }
             _ => {
-                adjacency_list_per_vertex.push(SmallVec::new());
+                adjacency_list_per_vertex.push(Vec::new());
             }
         }
     }
     assert_eq!(basic_blocks.len(), adjacency_list_per_vertex.len());
     Cfg {
         adjacency_list_per_vertex,
-        underlying_basic_blocks: basic_blocks,
+        underlying_basic_blocks: basic_blocks.to_vec(),
     }
 }
 
-impl<'a> std::fmt::Display for Cfg<'a> {
+impl<'a> std::fmt::Display for Cfg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (index, children) in self.adjacency_list_per_vertex.iter().enumerate() {
-            write!(f, "{}: ", self.underlying_basic_blocks[index].name)?;
+            write!(f, "{:#?}: ", self.underlying_basic_blocks[index].name)?;
             for child_index in children {
                 write!(f, "{} ", child_index)?;
             }
@@ -175,21 +170,33 @@ impl<'a> std::fmt::Display for Cfg<'a> {
     }
 }
 
-impl<'a> Cfg<'a> {
+impl Cfg {
     pub fn get_dot_representation(&self) -> String {
         let mut output: String = "digraph{".to_string();
-        for block in self.underlying_basic_blocks {
-            output.push_str(&block.name);
+        for (index, block) in self.underlying_basic_blocks.iter().enumerate() {
+            let name = match &block.name {
+                Some(name) => name.clone(),
+                None => format!("label_{}", index),
+            };
+            output.push_str(&name);
             output.push_str(" [label=\"");
-            output.push_str(&block.name);
+            output.push_str(&name);
             output.push_str("\", shape=box];");
         }
         for (index, children) in self.adjacency_list_per_vertex.iter().enumerate() {
             if !children.is_empty() {
+                let parent_name = match &self.underlying_basic_blocks[index].name {
+                    Some(name) => name.clone(),
+                    None => format!("label_{}", index),
+                };
                 for child in children {
-                    output.push_str(&self.underlying_basic_blocks[index].name);
+                    let child_name = match &self.underlying_basic_blocks[*child].name {
+                        Some(name) => name.clone(),
+                        None => format!("label_{}", *child),
+                    };
+                    output.push_str(&parent_name);
                     output.push_str(" -> ");
-                    output.push_str(&self.underlying_basic_blocks[*child].name);
+                    output.push_str(&child_name);
                     output.push(';');
                 }
             }
