@@ -1,4 +1,3 @@
-
 use bril_rs::{Code, Instruction};
 use common::BasicBlock;
 use std::collections::HashMap;
@@ -53,7 +52,7 @@ fn get_store_destination(instruction: &Instruction) -> Option<&str> {
     }
 }
 
-fn process_instructions_in_block(block: &BasicBlock) -> BasicBlock {
+fn dead_code_elimination(block: &BasicBlock) -> BasicBlock {
     let mut instuction_stream = block.instruction_stream.clone();
     loop {
         // Iterate in a loop till convergence
@@ -112,35 +111,15 @@ fn process_instructions_in_block(block: &BasicBlock) -> BasicBlock {
 }
 
 pub fn apply(program: &mut bril_rs::Program) {
-    program.functions.iter_mut().for_each(|function| {
-        // For every function optimze the basic blocks within it.
-        function.instrs = common::construct_basic_block_stream(&function.instrs)
-            .iter_mut() // For every block
-            .map(|block| process_instructions_in_block(block)) // Optimize this block
-            .map(|optimized_block| -> Vec<Code> {
-                // Re-form instruction stream from blocks
-                match optimized_block.name {
-                    Some(label_name) => {
-                        let mut instructions: Vec<Code> = vec![Code::Label {
-                            label: label_name,
-                            pos: None,
-                        }];
-                        instructions.extend_from_slice(&optimized_block.instruction_stream);
-                        instructions
-                    }
-                    None => optimized_block.instruction_stream,
-                }
-            })
-            .flatten()
-            .collect::<Vec<Code>>();
-    });
+    crate::apply_for_each_block(
+        program,
+        dead_code_elimination,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use crate::OptimizationPass;
-
-
 
     #[test]
     fn test_local_dead_code_elimination_1() {
