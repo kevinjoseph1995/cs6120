@@ -328,14 +328,56 @@ mod tests {
         assert_ne!(tuple1, tuple2);
     }
 
+    fn parse_program(text: &str) -> Program {
+        let program = common::parse_bril_text(text);
+        assert!(program.is_ok());
+        program.unwrap()
+    }
+
     #[test]
-    fn test_local_lvn_1() {
-        const BRIL_PROGRAM_TEXT: &'static str = indoc::indoc! {r#"
+    fn test_local_lvn_no_redundant_computation_1() {
+        let program = parse_program(indoc::indoc! {r#"
             @main() {
                 a: int = const 1;
                 b: int = const 2;
                 c: int = add a b;
                 b: int = const 3;
+                d: int = add a b;
+                print d;
+            }
+        "#});
+        let mut manager = LocalValueNumberingPass::new();
+        let program = Pass::apply(&mut manager, program);
+        let expected_program = program.clone();
+        assert_eq!(program, expected_program);
+    }
+
+    #[test]
+    fn test_local_lvn_no_redundant_computation_2() {
+        let program = parse_program(indoc::indoc! {r#"
+           @main() {
+                a: int = const 1;
+                b: int = id a;
+                c: int = add a b;
+                print c;
+            }
+        "#});
+        let mut manager = LocalValueNumberingPass::new();
+        let program = Pass::apply(&mut manager, program);
+        let expected_program = program.clone();
+        assert_eq!(program, expected_program);
+    }
+
+    #[test]
+    fn test_local_lvn_3() {
+        const BRIL_PROGRAM_TEXT: &'static str = indoc::indoc! {r#"
+            @main() {
+                a: int = const 1;
+                b: int = id a;
+                c: int = add a b;
+                x: int = id a;
+                y: int = id a;
+                z: int = id a;
                 d: int = add a b;
                 print d;
             }
@@ -345,24 +387,6 @@ mod tests {
         let program = program.unwrap();
         let mut manager = LocalValueNumberingPass::new();
         let program = Pass::apply(&mut manager, program);
-        println!("\n\n{}", program);
-    }
-
-    #[test]
-    fn test_local_lvn_2() {
-        const BRIL_PROGRAM_TEXT: &'static str = indoc::indoc! {r#"
-            @main() {
-                a: int = const 1;
-                b: int = id a;
-                c: int = add a b;
-                print c;
-            }
-        "#};
-        let program = common::parse_bril_text(&BRIL_PROGRAM_TEXT);
-        assert!(program.is_ok());
-        let program = program.unwrap();
-        let mut manager = LocalValueNumberingPass::new();
-        let program = Pass::apply(&mut manager, program);
-        println!("\n\n{}", program);
+        println!("{}", program);
     }
 }
