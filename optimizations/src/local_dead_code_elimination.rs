@@ -1,6 +1,91 @@
-use bril_rs::{Code, Instruction};
+use bril_rs::{Code, Instruction, Program};
 use common::BasicBlock;
 use std::collections::HashMap;
+
+use crate::{LocalScopePass, Pass};
+
+pub struct LocalDeadCodeEliminationPass {
+    instruction_stream_workspace: Vec<Code>,
+}
+
+impl LocalDeadCodeEliminationPass {
+    pub fn new() -> Self {
+        Self {
+            instruction_stream_workspace: Vec::new(),
+        }
+    }
+}
+
+impl LocalScopePass for LocalDeadCodeEliminationPass {
+    fn apply(&mut self, block: BasicBlock) -> BasicBlock {
+        let mut instuction_stream = block.instruction_stream;
+        loop {
+            // Iterate in a loop till convergence
+            // We need to find all the dead stores
+            let mut last_defined = HashMap::<&str, usize>::new();
+            let mut deletion_mask = Vec::<bool>::new();
+            deletion_mask.resize(instuction_stream.len(), false);
+            let mut atleast_one_marked_for_deleteion = false;
+
+            for index in 0..instuction_stream.len() {
+                let instruction = match &instuction_stream[index] {
+                    Code::Label { label: _, pos: _ } => panic!("Invalid pre-condition"),
+                    Code::Instruction(instruction) => instruction,
+                };
+                // Check for loads
+                for variable_loaded in get_load_sources(&instruction) {
+                    let _ = last_defined.remove(variable_loaded.as_str());
+                }
+                // Check for stores
+                let variable_stored = get_store_destination(&instruction);
+                if variable_stored.is_some() {
+                    match last_defined.get(variable_stored.unwrap()) {
+                        Some(dead_store_index) => {
+                            deletion_mask[*dead_store_index] = true;
+                            atleast_one_marked_for_deleteion = true;
+                        } // Mark for deletion,
+                        None => {}
+                    }
+                    last_defined.insert(variable_stored.unwrap(), index);
+                }
+            }
+            // Iterate through all the stores that were not read from
+            for (_label, index) in last_defined {
+                deletion_mask[index] = true;
+                atleast_one_marked_for_deleteion = true;
+            }
+            if !atleast_one_marked_for_deleteion {
+                // We have converged. No more dead stores in this local block
+                break;
+            }
+            {
+                // Perform the actual deletion of instructions
+                self.instruction_stream_workspace.clear();
+                self.instruction_stream_workspace
+                    .reserve(instuction_stream.len());
+                for (index, instr) in instuction_stream.iter().enumerate() {
+                    if !deletion_mask[index] {
+                        self.instruction_stream_workspace.push(instr.clone());
+                    }
+                }
+                std::mem::swap(
+                    &mut instuction_stream,
+                    &mut self.instruction_stream_workspace,
+                );
+            }
+        }
+        return BasicBlock {
+            name: block.name.clone(),
+            instruction_stream: instuction_stream,
+        };
+    }
+}
+
+impl Pass for LocalDeadCodeEliminationPass {
+    fn apply(&mut self, program: bril_rs::Program) -> Program {
+        crate::apply_for_each_block(program, self)
+    }
+}
 
 fn get_load_sources(instruction: &Instruction) -> &[String] {
     match instruction {
@@ -52,74 +137,9 @@ fn get_store_destination(instruction: &Instruction) -> Option<&str> {
     }
 }
 
-fn dead_code_elimination(block: &BasicBlock) -> BasicBlock {
-    let mut instuction_stream = block.instruction_stream.clone();
-    loop {
-        // Iterate in a loop till convergence
-        // We need to find all the dead stores
-        let mut last_defined = HashMap::<&str, usize>::new();
-        let mut deletion_mask = Vec::<bool>::new();
-        deletion_mask.resize(instuction_stream.len(), false);
-        let mut atleast_one_marked_for_deleteion = false;
-
-        for index in 0..instuction_stream.len() {
-            let instruction = match &instuction_stream[index] {
-                Code::Label { label: _, pos: _ } => panic!("Invalid pre-condition"),
-                Code::Instruction(instruction) => instruction,
-            };
-            // Check for loads
-            for variable_loaded in get_load_sources(&instruction) {
-                let _ = last_defined.remove(variable_loaded.as_str());
-            }
-            // Check for stores
-            let variable_stored = get_store_destination(&instruction);
-            if variable_stored.is_some() {
-                match last_defined.get(variable_stored.unwrap()) {
-                    Some(dead_store_index) => {
-                        deletion_mask[*dead_store_index] = true;
-                        atleast_one_marked_for_deleteion = true;
-                    } // Mark for deletion,
-                    None => {}
-                }
-                last_defined.insert(variable_stored.unwrap(), index);
-            }
-        }
-        // Iterate through all the stores that were not read from
-        for (_label, index) in last_defined {
-            deletion_mask[index] = true;
-            atleast_one_marked_for_deleteion = true;
-        }
-        if !atleast_one_marked_for_deleteion {
-            // We have converged. No more dead stores in this local block
-            break;
-        }
-        instuction_stream = {
-            let mut new_instruction_stream = Vec::<Code>::new();
-            new_instruction_stream.reserve(instuction_stream.len());
-            for (index, instr) in instuction_stream.iter().enumerate() {
-                if !deletion_mask[index] {
-                    new_instruction_stream.push(instr.clone());
-                }
-            }
-            new_instruction_stream
-        };
-    }
-    return BasicBlock {
-        name: block.name.clone(),
-        instruction_stream: instuction_stream,
-    };
-}
-
-pub fn apply(program: &mut bril_rs::Program) {
-    crate::apply_for_each_block(
-        program,
-        dead_code_elimination,
-    );
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::OptimizationPass;
+    use super::*;
 
     #[test]
     fn test_local_dead_code_elimination_1() {
@@ -133,8 +153,9 @@ mod tests {
         "#};
         let program = common::parse_bril_text(&BRIL_PROGRAM_TEXT);
         assert!(program.is_ok());
-        let mut program = program.unwrap();
-        OptimizationPass::LocalDeadCodeElimination.apply(&mut program);
+        let program = program.unwrap();
+        let mut manager = LocalDeadCodeEliminationPass::new();
+        let program = Pass::apply(&mut manager, program);
         assert!(program.functions[0].instrs.is_empty());
     }
     #[test]
@@ -150,8 +171,9 @@ mod tests {
         "#};
         let program = common::parse_bril_text(&BRIL_PROGRAM_TEXT);
         assert!(program.is_ok());
-        let mut program = program.unwrap();
-        OptimizationPass::LocalDeadCodeElimination.apply(&mut program);
+        let program = program.unwrap();
+        let mut manager = LocalDeadCodeEliminationPass::new();
+        let program = Pass::apply(&mut manager, program);
         assert!(program.functions[0].instrs.len() == 4); // "v3: int = const 3;" is a dead store and will get deleted
     }
 
@@ -166,8 +188,9 @@ mod tests {
         "#};
         let program = common::parse_bril_text(&BRIL_PROGRAM_TEXT);
         assert!(program.is_ok());
-        let mut program = program.unwrap();
-        OptimizationPass::LocalDeadCodeElimination.apply(&mut program);
+        let program = program.unwrap();
+        let mut manager = LocalDeadCodeEliminationPass::new();
+        let program = Pass::apply(&mut manager, program);
         assert!(program.functions[0].instrs.len() == 2); // "a: int = const 100"; is a dead store and will get deleted
     }
 
@@ -185,8 +208,9 @@ mod tests {
         "#};
         let program = common::parse_bril_text(&BRIL_PROGRAM_TEXT);
         assert!(program.is_ok());
-        let mut program = program.unwrap();
-        OptimizationPass::LocalDeadCodeElimination.apply(&mut program);
+        let program = program.unwrap();
+        let mut manager = LocalDeadCodeEliminationPass::new();
+        let program = Pass::apply(&mut manager, program);
         /*
         Output program:
         @main {

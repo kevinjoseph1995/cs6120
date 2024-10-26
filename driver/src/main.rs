@@ -1,7 +1,7 @@
 use std::{error::Error, io::Read};
 
 use clap::Parser;
-use optimizations::OptimizationPass;
+use optimizations::{OptimizationPass, PassManager};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -34,9 +34,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut optimizations = args.optimizations;
     optimizations.dedup_by(|a, b| a == b);
+    let mut pass_manager = PassManager::new();
     for optimization in optimizations.iter() {
-        optimization.apply(&mut program);
+        pass_manager.register_pass(*optimization);
     }
+    program = pass_manager.run(program);
 
+    println!("{}", program);
     Ok(())
 }
