@@ -1,6 +1,7 @@
-use std::{collections::HashMap, fmt::Display};
+use core::panic;
+use std::{collections::HashMap, fmt::Display, usize};
 
-use bril_rs::{Code, Instruction, Program, ValueOps};
+use bril_rs::{Code, ConstOps, Instruction, Literal, Program, ValueOps};
 use common::BasicBlock;
 use smallstr::SmallString;
 use smallvec::{smallvec, SmallVec};
@@ -34,6 +35,7 @@ type Table = Vec<TableEntry>;
 pub struct LocalValueNumberingPass {
     environment: HashMap<InternalString, TableIndex>,
     table: Table,
+    constant_map: HashMap<InternalString, Literal>,
 }
 
 #[allow(dead_code)]
@@ -169,12 +171,14 @@ impl LocalValueNumberingPass {
         Self {
             environment: HashMap::new(),
             table: Table::new(),
+            constant_map: HashMap::new(),
         }
     }
 
     fn reset_state(&mut self) {
         self.environment.clear();
         self.table.clear();
+        self.constant_map.clear();
     }
 
     fn get_value_tuple_and_destination(
@@ -222,6 +226,55 @@ impl LocalValueNumberingPass {
         }
     }
 
+    fn process_undefined_arguments(&mut self, instruction: &Instruction) {
+        let args = match instruction {
+            Instruction::Constant {
+                dest: _,
+                op: _,
+                pos: _,
+                const_type: _,
+                value: _,
+            } => &[],
+            Instruction::Value {
+                args,
+                dest: _,
+                funcs: _,
+                labels: _,
+                op: _,
+                pos: _,
+                op_type: _,
+            } => args.as_slice(),
+            Instruction::Effect {
+                args,
+                funcs: _,
+                labels: _,
+                op: _,
+                pos: _,
+            } => args.as_slice(),
+        };
+        for arg in args {
+            if !self.environment.contains_key(arg.as_str()) {
+                self.environment
+                    .insert(arg.clone().try_into().unwrap(), usize::MAX);
+                self.table.push(TableEntry {
+                    value_tuple: self
+                        .get_value_tuple_and_destination(&Instruction::Value {
+                            args: vec![arg.clone()],
+                            dest: arg.clone(),
+                            funcs: Vec::new(),
+                            labels: Vec::new(),
+                            op: ValueOps::Id,
+                            pos: None,
+                            op_type: bril_rs::Type::Bool, // This is incorrect
+                        })
+                        .0,
+                    variable_destinations: smallvec![InternalString::from_str(arg.as_str())],
+                });
+                *(self.environment.get_mut(arg.as_str()).unwrap()) = self.table.len() - 1;
+            }
+        }
+    }
+
     fn process_instruction(&mut self, instruction: &mut Instruction) {
         if let Instruction::Effect {
             args: _,
@@ -234,6 +287,7 @@ impl LocalValueNumberingPass {
             // Nothing to do this instruction does not produce a value
             return;
         }
+        self.process_undefined_arguments(instruction);
         let (value_tuple, destination_variable) = self.get_value_tuple_and_destination(instruction);
         // Check if the value tuple is in the LVN table
         if let Some((table_index, table_entry)) =
@@ -271,12 +325,354 @@ impl LocalValueNumberingPass {
             self.environment
                 .insert(destination_variable, self.table.len() - 1);
         }
+
+        self.constant_fold(instruction);
+    }
+
+    fn constant_fold(&mut self, instruction: &mut Instruction) {
+        if let Instruction::Constant {
+            dest,
+            op: _,
+            pos: _,
+            const_type: _,
+            value,
+        } = instruction
+        {
+            // Bind variable to the latest constant that's being assigned to it
+            self.constant_map
+                .insert(InternalString::from_str(dest.as_str()), value.clone());
+            return;
+        }
+        // Check if we can produce a new constant instruction if the arguments to the current value producing instruction are all constants
+        let new_instruction: Option<Instruction> = self.generate_constant_instruction(instruction);
+
+        if let Some(new_instruction) = new_instruction {
+            *instruction = new_instruction;
+        }
+    }
+
+    fn generate_constant_instruction(&mut self, instruction: &Instruction) -> Option<Instruction> {
+        let (args, dest, op, op_type) = match instruction {
+            Instruction::Value {
+                args,
+                dest,
+                funcs: _,
+                labels: _,
+                op,
+                pos: _,
+                op_type,
+            } => (args, dest, op, op_type),
+            _ => panic!("Unexpected branch"),
+        };
+
+        if *op == ValueOps::Call {
+            return None;
+        }
+
+        let const_args = {
+            let mut const_args: SmallVec<[Literal; 2]> = SmallVec::new();
+            for arg in args {
+                if let Some(literal) = self.constant_map.get(arg.as_str()) {
+                    const_args.push(literal.clone());
+                } else {
+                    // Argument cannot be reduced to a constant:_
+                    return None;
+                }
+            }
+            const_args
+        };
+
+        let new_const_literal: Literal = match op {
+            ValueOps::Add => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Int(value1), Literal::Int(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Int(value1 + value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Sub => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Int(value1), Literal::Int(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Int(value1 - value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Mul => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Int(value1), Literal::Int(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Int(value1 * value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Div => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Int(value1), Literal::Int(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Int(value1 / value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Eq => {
+                assert!(const_args.len() == 2);
+                match (&const_args[0], &const_args[1]) {
+                    (Literal::Int(v1), Literal::Int(v2)) => Literal::Bool(v1 == v2),
+                    (Literal::Bool(v1), Literal::Bool(v2)) => Literal::Bool(v1 == v2),
+                    (Literal::Float(v1), Literal::Float(v2)) => Literal::Bool(v1 == v2),
+                    (Literal::Char(v1), Literal::Char(v2)) => Literal::Bool(v1 == v2),
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::Lt => {
+                assert!(const_args.len() == 2);
+                match (&const_args[0], &const_args[1]) {
+                    (Literal::Int(value1), Literal::Int(value2)) => Literal::Bool(value1 < value2),
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::Gt => {
+                assert!(const_args.len() == 2);
+                match (&const_args[0], &const_args[1]) {
+                    (Literal::Int(value1), Literal::Int(value2)) => Literal::Bool(value1 > value2),
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::Le => {
+                assert!(const_args.len() == 2);
+                match (&const_args[0], &const_args[1]) {
+                    (Literal::Int(value1), Literal::Int(value2)) => Literal::Bool(value1 <= value2),
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::Ge => {
+                assert!(const_args.len() == 2);
+                match (&const_args[0], &const_args[1]) {
+                    (Literal::Int(value1), Literal::Int(value2)) => Literal::Bool(value1 >= value2),
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::Not => {
+                assert!(const_args.len() == 1);
+                match const_args[0] {
+                    Literal::Bool(val) => Literal::Bool(!val),
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::And => {
+                assert!(const_args.len() == 2);
+                match (&const_args[0], &const_args[1]) {
+                    (Literal::Bool(value1), Literal::Bool(value2)) => {
+                        Literal::Bool(*value1 && *value2)
+                    }
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::Or => {
+                assert!(const_args.len() == 2);
+                match (&const_args[0], &const_args[1]) {
+                    (Literal::Bool(value1), Literal::Bool(value2)) => {
+                        Literal::Bool(*value1 || *value2)
+                    }
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::Id => {
+                assert!(const_args.len() == 1);
+                const_args[0].clone()
+            }
+            ValueOps::Char2int => {
+                assert!(const_args.len() == 1);
+                match &const_args[0] {
+                    Literal::Char(c) => Literal::Int(u32::from(*c).into()),
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::Int2char => {
+                assert!(const_args.len() == 1);
+                match &const_args[0] {
+                    Literal::Int(value) => {
+                        Literal::Char(u32::try_from(*value).ok().and_then(char::from_u32).unwrap())
+                    }
+                    _ => panic!("Unreachable branch"),
+                }
+            }
+            ValueOps::Fadd => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Float(value1), Literal::Float(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Float(value1 + value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Fsub => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Float(value1), Literal::Float(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Float(value1 - value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Fmul => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Float(value1), Literal::Float(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Float(value1 * value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Fdiv => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Float(value1), Literal::Float(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Float(value1 / value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Feq => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Float(value1), Literal::Float(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 == value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Flt => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Float(value1), Literal::Float(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 < value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Fgt => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Float(value1), Literal::Float(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 > value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Fle => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Float(value1), Literal::Float(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 <= value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Fge => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Float(value1), Literal::Float(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 >= value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Ceq => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Char(value1), Literal::Char(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 == value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Clt => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Char(value1), Literal::Char(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 < value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Cgt => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Char(value1), Literal::Char(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 > value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Cle => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Char(value1), Literal::Char(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 <= value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::Cge => {
+                assert!(const_args.len() == 2);
+                if let (Literal::Char(value1), Literal::Char(value2)) =
+                    (&const_args[0], &const_args[1])
+                {
+                    Literal::Bool(value1 >= value2)
+                } else {
+                    panic!("Unreachable branch");
+                }
+            }
+            ValueOps::PtrAdd => panic!("Unreachable branch"),
+            ValueOps::Call => panic!("Unreachable branch"),
+            ValueOps::Alloc => todo!(),
+            ValueOps::Load => todo!(),
+            ValueOps::Phi => todo!(),
+        };
+        // Update the constant map
+        self.constant_map.insert(
+            SmallString::from_str(dest.as_str()),
+            new_const_literal.clone(),
+        );
+        return Some(Instruction::Constant {
+            dest: dest.clone(),
+            op: ConstOps::Const,
+            pos: None,
+            const_type: op_type.clone(),
+            value: new_const_literal,
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use core::str;
+
     use super::*;
+    use brilirs::{basic_block::BBProgram, check, interp};
     use smallvec::smallvec;
 
     #[test]
@@ -330,7 +726,7 @@ mod tests {
 
     fn parse_program(text: &str) -> Program {
         let program = common::parse_bril_text(text);
-        assert!(program.is_ok());
+        assert!(program.is_ok(), "{}", program.err().unwrap());
         program.unwrap()
     }
 
@@ -348,8 +744,16 @@ mod tests {
         "#});
         let mut manager = LocalValueNumberingPass::new();
         let program = Pass::apply(&mut manager, program);
-        let expected_program = program.clone();
-        assert_eq!(program, expected_program);
+        let bbprog: BBProgram = program.try_into().expect("Invalid program");
+        assert!(check::type_check(&bbprog).is_ok());
+        let mut stdout = Vec::<u8>::new();
+        let mut stderr = Vec::<u8>::new();
+        assert!(interp::execute_main(&bbprog, &mut stdout, &[], true, &mut stderr).is_ok());
+        assert!(
+            String::from_utf8(stdout).unwrap() == "4\n",
+            "Error={}",
+            String::from_utf8(stderr).unwrap()
+        );
     }
 
     #[test]
@@ -364,13 +768,21 @@ mod tests {
         "#});
         let mut manager = LocalValueNumberingPass::new();
         let program = Pass::apply(&mut manager, program);
-        let expected_program = program.clone();
-        assert_eq!(program, expected_program);
+        let bbprog: BBProgram = program.try_into().expect("Invalid program");
+        assert!(check::type_check(&bbprog).is_ok());
+        let mut stdout = Vec::<u8>::new();
+        let mut stderr = Vec::<u8>::new();
+        assert!(interp::execute_main(&bbprog, &mut stdout, &[], true, &mut stderr).is_ok());
+        assert!(
+            String::from_utf8(stdout).unwrap() == "2\n",
+            "Error={}",
+            String::from_utf8(stderr).unwrap()
+        );
     }
 
     #[test]
     fn test_local_lvn_3() {
-        const BRIL_PROGRAM_TEXT: &'static str = indoc::indoc! {r#"
+        let program = parse_program(indoc::indoc! {r#"
             @main() {
                 a: int = const 1;
                 b: int = id a;
@@ -381,12 +793,76 @@ mod tests {
                 d: int = add a b;
                 print d;
             }
-        "#};
-        let program = common::parse_bril_text(&BRIL_PROGRAM_TEXT);
-        assert!(program.is_ok());
-        let program = program.unwrap();
+        "#});
         let mut manager = LocalValueNumberingPass::new();
         let program = Pass::apply(&mut manager, program);
-        println!("{}", program);
+        let bbprog: BBProgram = program.try_into().expect("Invalid program");
+        assert!(check::type_check(&bbprog).is_ok());
+        let mut stdout = Vec::<u8>::new();
+        let mut stderr = Vec::<u8>::new();
+        assert!(interp::execute_main(&bbprog, &mut stdout, &[], true, &mut stderr).is_ok());
+        assert!(
+            String::from_utf8(stdout).unwrap() == "2\n",
+            "Error={}",
+            String::from_utf8(stderr).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_local_lvn_4() {
+        let program = parse_program(indoc::indoc! {r#"
+            @main(a: int, b:int) {
+                c: int = add a b;
+                d: int = add a b;
+                e: int = add c d;
+                print e;
+            }
+        "#});
+        let mut manager = LocalValueNumberingPass::new();
+        let program = Pass::apply(&mut manager, program);
+        let bbprog: BBProgram = program.try_into().expect("Invalid program");
+        assert!(check::type_check(&bbprog).is_ok());
+        let mut stdout = Vec::<u8>::new();
+        let mut stderr = Vec::<u8>::new();
+        assert!(interp::execute_main(
+            &bbprog,
+            &mut stdout,
+            &["1".to_string(), "2".to_string()],
+            true,
+            &mut stderr
+        )
+        .is_ok());
+        assert!(
+            String::from_utf8(stdout).unwrap() == "6\n",
+            "Error={}",
+            String::from_utf8(stderr).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_local_lvn_5() {
+        let program = parse_program(indoc::indoc! {r#"
+            @main {
+                a: int = const 4;
+                b: int = const 6;
+                c: int = add a b;
+            jmp .somewhere;
+            .somewhere:
+                d: int = add a b;
+                print c;
+            }
+        "#});
+        let mut manager = LocalValueNumberingPass::new();
+        let program = Pass::apply(&mut manager, program);
+        let bbprog: BBProgram = program.try_into().expect("Invalid program");
+        assert!(check::type_check(&bbprog).is_ok());
+        let mut stdout = Vec::<u8>::new();
+        let mut stderr = Vec::<u8>::new();
+        assert!(interp::execute_main(&bbprog, &mut stdout, &[], true, &mut stderr).is_ok());
+        assert!(
+            String::from_utf8(stdout).unwrap() == "10\n",
+            "Error={}",
+            String::from_utf8(stderr).unwrap()
+        );
     }
 }
