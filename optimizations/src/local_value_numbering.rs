@@ -312,6 +312,13 @@ impl LocalValueNumberingPass {
                         pos: _,
                         op_type,
                     } => op_type.clone(),
+                    Instruction::Constant {
+                        dest: _,
+                        op: _,
+                        pos: _,
+                        const_type,
+                        value: _,
+                    } => const_type.clone(),
                     _ => panic!(),
                 },
             };
@@ -861,6 +868,63 @@ mod tests {
         assert!(interp::execute_main(&bbprog, &mut stdout, &[], true, &mut stderr).is_ok());
         assert!(
             String::from_utf8(stdout).unwrap() == "10\n",
+            "Error={}",
+            String::from_utf8(stderr).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_local_lvn_6() {
+        let program = parse_program(indoc::indoc! {r#"
+            @main {
+            v1: int = const 1;
+            v2: int = const 0;
+            counter: int = const 0;
+
+            .loop_start:
+            v7: int = id counter;
+            v8: int = const 99;
+            v9: bool = lt v7 v8;
+            br v9 .loop_body .loop_end;
+
+            .loop_body:
+            v3: bool = eq v1 v2;  # Always false
+            br v3 .then .else;  # .then is a dead branch - this br instruction can be optimized out by a smart compiler
+
+            .then:
+            v4: int = const 100;
+            print v4;
+
+            .else:
+            v4: int = const 50;
+
+            v10: int = id counter;
+            v11: int = const 1;
+            v12: int = add v10 v11;
+            counter: int = id v12;
+
+            jmp .loop_start;
+
+            .loop_end:
+            print v4;
+            }
+        "#});
+        let mut manager = LocalValueNumberingPass::new();
+        let program = Pass::apply(&mut manager, program);
+        println!("{}", program);
+        let bbprog: BBProgram = program.try_into().expect("Invalid program");
+        // TODO: The following should compile but there seems to be a bug in check::type_check
+        // let type_check_result = check::type_check(&bbprog);
+        // assert!(
+        //     type_check_result.is_ok(),
+        //     "Type-check error= {}",
+        //     type_check_result.err().unwrap()
+        // );
+        let mut stdout = Vec::<u8>::new();
+        let mut stderr = Vec::<u8>::new();
+        assert!(interp::execute_main(&bbprog, &mut stdout, &[], true, &mut stderr).is_ok());
+        assert!(
+            String::from_utf8(stdout).unwrap() == "50\n",
             "Error={}",
             String::from_utf8(stderr).unwrap()
         );
