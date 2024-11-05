@@ -1,0 +1,13 @@
+[package]
+name = "dataflow_analysis"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = "4.5.20"
+common = { version = "0.1.0", path = "../common" }
+
+[dependencies.bril-rs]
+version = "0.1.0"
+path = "../bril/bril-rs"
+features = ["ssa", "memory", "float", "speculate", "position"]

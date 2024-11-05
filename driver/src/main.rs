@@ -1,6 +1,7 @@
 use std::{error::Error, io::Read};
 
 use clap::Parser;
+use dataflow_analysis::DataflowAnalyses;
 use optimizations::{OptimizationPass, PassManager};
 
 #[derive(Parser)]
@@ -11,6 +12,9 @@ struct Args {
 
     #[arg(long, value_enum)]
     optimizations: Vec<OptimizationPass>,
+
+    #[arg(short, long, value_enum, help = "Type of dataflow analysis to run")]
+    dataflow_analysis: Option<DataflowAnalyses>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -39,7 +43,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         pass_manager.register_pass(*optimization);
     }
     program = pass_manager.run(program);
-
-    println!("{}", program);
+    if let Some(dataflow_analysis_name) = args.dataflow_analysis {
+        dataflow_analysis::run_analysis(dataflow_analysis_name, &program);
+    } else {
+        // Simply print the optimized program
+        println!("{}", program);
+    }
     Ok(())
 }
