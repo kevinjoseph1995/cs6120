@@ -111,6 +111,10 @@ pub fn construct_cfg<'a>(basic_blocks: &[BasicBlock]) -> Cfg {
             _ => {
                 if index < basic_blocks.len() - 1 {
                     adjacency_list_per_vertex.push(vec![index + 1]);
+                } else if index == basic_blocks.len() - 1 {
+                    adjacency_list_per_vertex.push(vec![]);
+                } else {
+                    panic!("\"index\" being greater than the size of the number of the basic blocks is an invalid state");
                 }
                 continue;
             }
@@ -178,7 +182,7 @@ impl Cfg {
                 Some(name) => name.clone(),
                 None => format!("label_{}", index),
             };
-            output.push_str(&name);
+            output.push_str(format!("\"{}\"", name).as_str());
             output.push_str(" [label=\"");
             output.push_str(&name);
             output.push_str("\", shape=box];");
@@ -194,9 +198,9 @@ impl Cfg {
                         Some(name) => name.clone(),
                         None => format!("label_{}", *child),
                     };
-                    output.push_str(&parent_name);
+                    output.push_str(format!("\"{}\"", parent_name).as_str());
                     output.push_str(" -> ");
-                    output.push_str(&child_name);
+                    output.push_str(format!("\"{}\"", child_name).as_str());
                     output.push(';');
                 }
             }
