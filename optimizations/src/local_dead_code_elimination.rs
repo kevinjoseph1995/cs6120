@@ -1,4 +1,4 @@
-use bril_rs::{Code, Instruction, Program};
+use bril_rs::{Instruction, Program};
 use common::BasicBlock;
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -27,14 +27,7 @@ impl LocalScopePass for LocalDeadCodeEliminationPass {
             self.deletion_mask.resize(instuction_stream.len(), false);
             let mut atleast_one_deletion = false;
 
-            for (index, instruction) in instuction_stream
-                .iter()
-                .map(|code| match code {
-                    Code::Label { label: _, pos: _ } => panic!("Invalid pre-condition"),
-                    Code::Instruction(instruction) => instruction,
-                })
-                .enumerate()
-            {
+            for (index, instruction) in instuction_stream.iter().enumerate() {
                 let destination = get_store_destination(instruction);
                 if destination.is_none() {
                     // Cannot eliminate a dead-store if the current instruction isn't a store :P

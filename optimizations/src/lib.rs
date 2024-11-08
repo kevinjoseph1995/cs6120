@@ -1,6 +1,8 @@
 mod local_dead_code_elimination;
 mod local_value_numbering;
 
+use std::vec;
+
 use bril_rs::{Code, Program};
 use clap::ValueEnum;
 use common::BasicBlock;
@@ -60,17 +62,17 @@ where
             .map(|block| pass_manager.apply(block)) // Optimize this block
             .map(|optimized_block| -> Vec<Code> {
                 // Re-form instruction stream from blocks
-                match optimized_block.name {
-                    Some(label_name) => {
-                        let mut instructions: Vec<Code> = vec![Code::Label {
-                            label: label_name,
-                            pos: None,
-                        }];
-                        instructions.extend_from_slice(&optimized_block.instruction_stream);
-                        instructions
-                    }
-                    None => optimized_block.instruction_stream,
+                let mut instructions: Vec<Code> = vec![];
+                if let Some(label_name) = optimized_block.name {
+                    instructions.push(Code::Label {
+                        label: label_name,
+                        pos: None,
+                    });
                 }
+                for instr in optimized_block.instruction_stream.iter() {
+                    instructions.push(Code::Instruction(instr.clone()));
+                }
+                instructions
             })
             .flatten()
             .collect::<Vec<Code>>();

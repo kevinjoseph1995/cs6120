@@ -1,7 +1,7 @@
 use core::panic;
 use std::{collections::HashMap, fmt::Display, usize};
 
-use bril_rs::{Code, ConstOps, Instruction, Literal, Program, ValueOps};
+use bril_rs::{ConstOps, Instruction, Literal, Program, ValueOps};
 use common::BasicBlock;
 use smallstr::SmallString;
 use smallvec::{smallvec, SmallVec};
@@ -76,12 +76,6 @@ impl LocalScopePass for LocalValueNumberingPass {
         input_block
             .instruction_stream
             .iter_mut()
-            .map(|instr| match instr {
-                Code::Label { label: _, pos: _ } => {
-                    panic!("Invalid pre-condition; Found a unexpected label in basic block")
-                }
-                Code::Instruction(instruction) => instruction,
-            })
             .for_each(|instruction| self.process_instruction(instruction));
         return input_block;
     }
