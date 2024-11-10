@@ -7,7 +7,9 @@ use smallvec::SmallVec;
 struct Node {
     basic_block: BasicBlock,
     name: String,
+    // Since the CFG is a DAG the edge direction is from the current node to the successor node.
     successor_indices: SmallVec<[usize; 2]>,
+    // The predecessor_indices are the indices of the nodes that have an edge to the current node.
     predecessor_indices: SmallVec<[usize; 2]>,
 }
 
@@ -141,12 +143,24 @@ impl Cfg {
         self.nodes.len()
     }
 
+    pub fn get_function_name(&self) -> &str {
+        &self.function_name
+    }
+
     pub fn get_basic_block(&self, index: NodeIndex) -> &BasicBlock {
         &self.nodes[index].basic_block
     }
 
     pub fn get_node_name(&self, index: NodeIndex) -> &str {
         &self.nodes[index].name
+    }
+
+    pub fn get_successor_indices(&self, index: NodeIndex) -> &[usize] {
+        &self.nodes[index].successor_indices
+    }
+
+    pub fn get_predecessor_indices(&self, index: NodeIndex) -> &[usize] {
+        &self.nodes[index].predecessor_indices
     }
 
     pub fn get_successor_iterator(&self, index: NodeIndex) -> CfgIterator {

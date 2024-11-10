@@ -15,6 +15,12 @@ struct Args {
 
     #[arg(short, long, value_enum, help = "Type of dataflow analysis to run")]
     dataflow_analysis: Option<DataflowAnalyses>,
+
+    #[arg(long, help = "Dump the AST as a DOT file")]
+    dump_ast_as_dot: bool,
+
+    #[arg(long, help = "Output the program after optimizations")]
+    output_program: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -45,9 +51,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     program = pass_manager.run(program);
     if let Some(dataflow_analysis_name) = args.dataflow_analysis {
         dataflow_analysis::run_analysis(dataflow_analysis_name, &program);
-    } else {
-        // Simply print the optimized program
-        println!("{}", program);
+    }
+    if args.dump_ast_as_dot {
+        println!("DOT representation of the CFG's of the program functions");
+        for function in &program.functions {
+            println!(
+                "{}\n {}",
+                function.name,
+                common::cfg::get_dot_representation(&common::cfg::Cfg::new(function))
+            );
+            println!("=========================================================");
+        }
+    }
+    if args.output_program {
+        println!("Program{}", program);
     }
     Ok(())
 }

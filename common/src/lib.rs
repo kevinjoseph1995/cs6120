@@ -1,4 +1,4 @@
-mod cfg;
+pub mod cfg;
 
 use bril_rs::{Code, Instruction, Program};
 use std::{error::Error, fmt::Display};
