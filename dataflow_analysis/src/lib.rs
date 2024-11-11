@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hash;
 
 use bril_rs::Program;
 use clap::ValueEnum;
-use common::cfg::{get_dot_representation, Cfg, NodeIndex};
+use common::cfg::{Cfg, NodeIndex};
 
 #[derive(ValueEnum, Clone, Debug, PartialEq, Copy)]
 pub enum DataflowAnalyses {
@@ -63,13 +63,21 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
         inputs: &Vec<HashSet<ValueType>>,
         outputs: &Vec<HashSet<ValueType>>,
     ) -> () {
-        for index in 0..cfg.number_of_nodes() {
-            println!("{}", cfg.get_node_name(index));
+        let total_number_of_nodes = cfg.number_of_nodes();
+        let mut statements: Vec<String> = Vec::new();
+        // Add node statements
+        for index in 0..total_number_of_nodes {
+            let node_name = cfg.get_node_name(index);
+            let mut node_text = String::new();
+            // Add more information for each node
+            for instr in cfg.get_basic_block(index).instruction_stream.iter() {
+                node_text.push_str(&format!("{}\\n", instr));
+            }
             let formatted_values: Vec<String> = inputs[index]
                 .iter()
                 .map(|value| format!("{}", value))
                 .collect();
-            println!("  in: {}", {
+            let in_ = format!("  in: {}", {
                 if formatted_values.is_empty() {
                     "∅".to_string()
                 } else {
@@ -80,14 +88,26 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
                 .iter()
                 .map(|value| format!("{}", value))
                 .collect();
-            println!("  out: {}", {
+            let out = format!("  out: {}", {
                 if formatted_values.is_empty() {
                     "∅".to_string()
                 } else {
                     formatted_values.join(", ")
                 }
             });
+            statements.push(format!(
+                "\"{node_name}\" [shape=record, label=\"{node_name} \\n {in_} {out}| {node_text}\"]",
+            ));
         }
+        // Add edge statements
+        for index in 0..total_number_of_nodes {
+            let node_name = cfg.get_node_name(index);
+            for successor_index in cfg.get_successor_indices(index) {
+                let successor_name = cfg.get_node_name(*successor_index);
+                statements.push(format!("\"{}\" -> \"{}\"", node_name, successor_name));
+            }
+        }
+        println!("digraph{{{}}}", statements.join(";"))
     }
 
     fn merge(
@@ -105,12 +125,6 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
 }
 
 struct LiveVariableAnalysis {}
-
-impl LiveVariableAnalysis {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
 
 impl<'a> Analysis<'a, &'a str> for LiveVariableAnalysis {
     fn merge(
@@ -176,24 +190,9 @@ pub fn run_analysis(dataflow_analysis_name: DataflowAnalyses, program: &Program)
         .functions
         .iter()
         .map(|f| Cfg::new(f))
-        .for_each(|cfg| {
-            println!(
-                "Running {:#?} analysis on function: {}",
-                dataflow_analysis_name,
-                cfg.get_function_name()
-            );
-            match dataflow_analysis_name {
-                DataflowAnalyses::LiveVariable => {
-                    LiveVariableAnalysis::new().run(&cfg, HashSet::new(), Direction::Backward);
-                }
+        .for_each(|cfg| match dataflow_analysis_name {
+            DataflowAnalyses::LiveVariable => {
+                LiveVariableAnalysis {}.run(&cfg, HashSet::new(), Direction::Backward);
             }
         });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {}
 }
