@@ -2,13 +2,15 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hash;
 
-use bril_rs::Program;
+use bril_rs::{Argument, Program};
 use clap::ValueEnum;
 use common::cfg::{Cfg, NodeIndex};
+use derivative::Derivative;
 
 #[derive(ValueEnum, Clone, Debug, PartialEq, Copy)]
 pub enum DataflowAnalyses {
     LiveVariable,
+    ReachingDefinitions,
 }
 
 enum Direction {
@@ -88,7 +90,7 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
                 .iter()
                 .map(|value| format!("{}", value))
                 .collect();
-            let out = format!("  out: {}", {
+            let out = format!("\\nout: {}", {
                 if formatted_values.is_empty() {
                     "∅".to_string()
                 } else {
@@ -125,6 +127,18 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
 }
 
 struct LiveVariableAnalysis {}
+
+#[derive(Derivative)]
+#[derivative(Eq, PartialEq, Hash, Clone)]
+struct Definition<'a> {
+    destination_variable: &'a str,
+    basic_block_index: usize,
+    instruction_index: usize,
+    arg_index: Option<usize>,
+    #[derivative(PartialEq = "ignore", Hash = "ignore")]
+    cfg: &'a Cfg,
+}
+struct ReachingDefinitions {}
 
 impl<'a> Analysis<'a, &'a str> for LiveVariableAnalysis {
     fn merge(
@@ -185,14 +199,114 @@ impl<'a> Analysis<'a, &'a str> for LiveVariableAnalysis {
     }
 }
 
+impl std::fmt::Display for Definition<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.destination_variable)
+    }
+}
+
+impl<'a> Analysis<'a, Definition<'a>> for ReachingDefinitions {
+    fn merge(
+        &self,
+        accumulator: HashSet<Definition<'a>>,
+        new_value: &HashSet<Definition<'a>>,
+    ) -> HashSet<Definition<'a>> {
+        accumulator.union(new_value).map(|a| a.clone()).collect()
+    }
+
+    fn transfer(
+        &self,
+        cfg: &'a Cfg,
+        index: NodeIndex,
+        input: &HashSet<Definition<'a>>,
+    ) -> HashSet<Definition<'a>> {
+        let mut output = input.clone();
+        let basic_block = cfg.get_basic_block(index);
+        for (instruction_index, instruction) in basic_block.instruction_stream.iter().enumerate() {
+            match instruction {
+                bril_rs::Instruction::Constant {
+                    dest,
+                    op: _,
+                    pos: _,
+                    const_type: _,
+                    value: _,
+                } => {
+                    // Kill any previous definitions that were assigning to the same variable
+                    output.retain(|def| def.destination_variable != dest.as_str());
+                    // Insert the current definition
+                    output.insert(Definition {
+                        destination_variable: dest,
+                        basic_block_index: index,
+                        instruction_index,
+                        arg_index: None,
+                        cfg,
+                    });
+                }
+                bril_rs::Instruction::Value {
+                    args: _,
+                    dest,
+                    funcs: _,
+                    labels: _,
+                    op: _,
+                    pos: _,
+                    op_type: _,
+                } => {
+                    // Kill any previous definitions that were assigning to the same variable
+                    output.retain(|def| def.destination_variable != dest.as_str());
+                    // Insert the current definition
+                    output.insert(Definition {
+                        destination_variable: dest,
+                        basic_block_index: index,
+                        instruction_index,
+                        arg_index: None,
+                        cfg,
+                    });
+                }
+                bril_rs::Instruction::Effect {
+                    args: _,
+                    funcs: _,
+                    labels: _,
+                    op: _,
+                    pos: _,
+                } => {}
+            }
+        }
+        return output;
+    }
+}
+
+fn create_set_of_definitions_from_function_arguments<'a>(
+    cfg: &'a Cfg,
+    function_arguments: &'a Vec<Argument>,
+) -> HashSet<Definition<'a>> {
+    function_arguments
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| Definition {
+            destination_variable: &arg.name,
+            basic_block_index: 0,
+            instruction_index: 0,
+            arg_index: Some(index),
+            cfg,
+        })
+        .collect()
+}
+
 pub fn run_analysis(dataflow_analysis_name: DataflowAnalyses, program: &Program) -> () {
     program
         .functions
         .iter()
-        .map(|f| Cfg::new(f))
-        .for_each(|cfg| match dataflow_analysis_name {
+        .map(|f| (f, Cfg::new(f)))
+        .for_each(|(f, cfg)| match dataflow_analysis_name {
             DataflowAnalyses::LiveVariable => {
                 LiveVariableAnalysis {}.run(&cfg, HashSet::new(), Direction::Backward);
+            }
+            DataflowAnalyses::ReachingDefinitions => {
+                ReachingDefinitions {}.run(
+                    &cfg,
+                    create_set_of_definitions_from_function_arguments(&cfg, &f.args),
+                    Direction::Forward,
+                );
             }
         });
 }
