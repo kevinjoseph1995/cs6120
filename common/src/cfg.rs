@@ -18,26 +18,6 @@ pub struct Cfg {
     function_name: String,
 }
 
-pub struct CfgIterator<'a> {
-    cfg: &'a Cfg,
-    node_indices: &'a [usize],
-    current_index: usize,
-}
-
-impl<'a> Iterator for &'a mut CfgIterator<'a> {
-    type Item = &'a BasicBlock;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let current_index = self.current_index;
-        self.current_index = self.current_index + 1;
-        if current_index == self.node_indices.len() {
-            None
-        } else {
-            Some(self.cfg.get_basic_block(self.node_indices[current_index]))
-        }
-    }
-}
-
 pub type NodeIndex = usize;
 
 impl Cfg {
@@ -139,6 +119,33 @@ impl Cfg {
         }
     }
 
+    pub fn get_post_order(&self) -> Vec<NodeIndex> {
+        let mut visited: Vec<bool> = vec![false; self.nodes.len()];
+        let mut post_order: Vec<NodeIndex> = Vec::new();
+        fn dfs(
+            node_index: NodeIndex,
+            cfg: &Cfg,
+            visited: &mut Vec<bool>,
+            post_order: &mut Vec<NodeIndex>,
+        ) {
+            visited[node_index] = true;
+            for successor_index in cfg.nodes[node_index].successor_indices.iter() {
+                if !visited[*successor_index] {
+                    dfs(*successor_index, cfg, visited, post_order);
+                }
+            }
+            post_order.push(node_index);
+        }
+        // We make the assumption that the entry node is the first node in the CFG
+        for index in 0..self.nodes.len() {
+            if !visited[index] {
+                dfs(index, self, &mut visited, &mut post_order);
+            }
+        }
+        assert_eq!(post_order.len(), self.nodes.len());
+        return post_order;
+    }
+
     pub fn number_of_nodes(&self) -> usize {
         self.nodes.len()
     }
@@ -161,22 +168,6 @@ impl Cfg {
 
     pub fn get_predecessor_indices(&self, index: NodeIndex) -> &[usize] {
         &self.nodes[index].predecessor_indices
-    }
-
-    pub fn get_successor_iterator(&self, index: NodeIndex) -> CfgIterator {
-        CfgIterator {
-            cfg: self,
-            node_indices: &self.nodes[index].successor_indices,
-            current_index: 0,
-        }
-    }
-
-    pub fn get_predecessor_iterator(&self, index: NodeIndex) -> CfgIterator {
-        CfgIterator {
-            cfg: self,
-            node_indices: &self.nodes[index].predecessor_indices,
-            current_index: 0,
-        }
     }
 }
 
@@ -248,7 +239,7 @@ mod tests {
             "})
         .unwrap();
         let cfg = Cfg::new(&program.functions[0]);
-        println!("{}", get_dot_representation(&cfg));
+        assert_eq!(cfg.number_of_nodes(), 6);
         for index in 0..cfg.number_of_nodes() {
             if cfg.get_node_name(index) == ".loop" {
                 assert_eq!(cfg.nodes[index].successor_indices.len(), 2);
@@ -270,5 +261,51 @@ mod tests {
                 assert_eq!(cfg.nodes[index].predecessor_indices.len(), 0);
             }
         }
+    }
+
+    #[test]
+    fn test_post_order() {
+        let program = crate::parse_bril_text(indoc! {"
+            @main {
+            .entry:
+              x: int = const 0;
+              i: int = const 0;
+              one: int = const 1;
+
+            .loop:
+              max: int = const 10;
+              cond: bool = lt i max;
+              br cond .body .exit;
+
+            .body:
+              mid: int = const 5;
+              cond: bool = lt i mid;
+              br cond .then .endif;
+
+            .then:
+              x: int = add x one;
+              jmp .endif;
+
+            .endif:
+              factor: int = const 2;
+              x: int = mul x factor;
+
+              i: int = add i one;
+              jmp .loop;
+
+            .exit:
+              print x;
+            }
+            "})
+        .unwrap();
+        let cfg = Cfg::new(&program.functions[0]);
+        let post_order_indices = cfg.get_post_order();
+        assert_eq!(post_order_indices.len(), cfg.number_of_nodes());
+        assert_eq!(post_order_indices[0], 4);
+        assert_eq!(post_order_indices[1], 3);
+        assert_eq!(post_order_indices[2], 2);
+        assert_eq!(post_order_indices[3], 5);
+        assert_eq!(post_order_indices[4], 1);
+        assert_eq!(post_order_indices[5], 0);
     }
 }
