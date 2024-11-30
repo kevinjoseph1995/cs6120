@@ -20,24 +20,25 @@ enum Direction {
 
 trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
     fn run(&self, cfg: &'a Cfg, init: HashSet<ValueType>, direction: Direction) -> () {
-        let all_predecessors: Vec<&[usize]> = (0..cfg.number_of_nodes())
-            .map(|node_index| cfg.get_predecessor_indices(node_index))
+        let all_predecessors: Vec<&[usize]> = (0..cfg.dag.number_of_nodes())
+            .map(|node_index| cfg.dag.get_predecessor_indices(node_index))
             .collect();
-        let all_successors: Vec<&[usize]> = (0..cfg.number_of_nodes())
-            .map(|node_index| cfg.get_successor_indices(node_index))
+        let all_successors: Vec<&[usize]> = (0..cfg.dag.number_of_nodes())
+            .map(|node_index| cfg.dag.get_successor_indices(node_index))
             .collect();
         let (input_edges, output_edges) = match direction {
             Direction::Forward => (all_predecessors, all_successors),
             Direction::Backward => (all_successors, all_predecessors),
         };
 
-        let mut worklist: Vec<usize> = (0..cfg.number_of_nodes()).collect();
+        let mut worklist: Vec<usize> = (0..cfg.dag.number_of_nodes()).collect();
 
-        let mut input_list: Vec<HashSet<ValueType>> = (0..cfg.number_of_nodes())
+        let mut input_list: Vec<HashSet<ValueType>> = (0..cfg.dag.number_of_nodes())
             .map(|_| HashSet::<ValueType>::new() /*Empty set */)
             .collect();
-        let mut output_list: Vec<HashSet<ValueType>> =
-            (0..cfg.number_of_nodes()).map(|_| init.clone()).collect();
+        let mut output_list: Vec<HashSet<ValueType>> = (0..cfg.dag.number_of_nodes())
+            .map(|_| init.clone())
+            .collect();
         input_list[0] = init;
 
         while !worklist.is_empty() {
@@ -65,11 +66,11 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
         inputs: &Vec<HashSet<ValueType>>,
         outputs: &Vec<HashSet<ValueType>>,
     ) -> () {
-        let total_number_of_nodes = cfg.number_of_nodes();
+        let total_number_of_nodes = cfg.dag.number_of_nodes();
         let mut statements: Vec<String> = Vec::new();
         // Add node statements
         for index in 0..total_number_of_nodes {
-            let node_name = cfg.get_node_name(index);
+            let node_name = cfg.dag.get_node_name(index);
             let mut node_text = String::new();
             // Add more information for each node
             for instr in cfg.get_basic_block(index).instruction_stream.iter() {
@@ -103,9 +104,9 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
         }
         // Add edge statements
         for index in 0..total_number_of_nodes {
-            let node_name = cfg.get_node_name(index);
-            for successor_index in cfg.get_successor_indices(index) {
-                let successor_name = cfg.get_node_name(*successor_index);
+            let node_name = cfg.dag.get_node_name(index);
+            for successor_index in cfg.dag.get_successor_indices(index) {
+                let successor_name = cfg.dag.get_node_name(*successor_index);
                 statements.push(format!("\"{}\" -> \"{}\"", node_name, successor_name));
             }
         }

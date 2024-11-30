@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!(
                 "{}\n {}",
                 function.name,
-                common::cfg::get_dot_representation(&common::cfg::Cfg::new(function))
+                common::cfg::Cfg::new(function).dag.get_dot_representation()
             );
             println!("=========================================================");
         }
