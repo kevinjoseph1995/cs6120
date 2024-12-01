@@ -130,7 +130,7 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
 struct LiveVariableAnalysis {}
 
 #[derive(Derivative)]
-#[derivative(Eq, PartialEq, Hash, Clone)]
+#[derivative(Eq, PartialEq, Hash)]
 struct Definition<'a> {
     destination_variable: &'a str,
     basic_block_index: usize,
@@ -139,6 +139,19 @@ struct Definition<'a> {
     #[derivative(PartialEq = "ignore", Hash = "ignore")]
     cfg: &'a Cfg,
 }
+
+impl Clone for Definition<'_> {
+    fn clone(&self) -> Self {
+        Definition {
+            destination_variable: self.destination_variable,
+            basic_block_index: self.basic_block_index,
+            instruction_index: self.instruction_index,
+            arg_index: self.arg_index,
+            cfg: self.cfg,
+        }
+    }
+}
+
 struct ReachingDefinitions {}
 
 impl<'a> Analysis<'a, &'a str> for LiveVariableAnalysis {

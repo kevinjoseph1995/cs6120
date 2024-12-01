@@ -1,3 +1,5 @@
+pub mod ssa;
+
 use bril_rs::Function;
 use std::{
     collections::{HashMap, HashSet},
@@ -23,10 +25,12 @@ struct Node<Data: NodeEntry> {
     predecessor_indices: SmallVec<[usize; 2]>,
 }
 
+#[derive(Debug, Clone)]
 pub struct DirectedGraph<Data: NodeEntry> {
     nodes: Vec<Node<Data>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Cfg {
     pub dag: DirectedGraph<BasicBlock>,
     pub function_name: String,
@@ -223,6 +227,9 @@ impl Cfg {
     pub fn get_basic_block(&self, index: NodeIndex) -> &BasicBlock {
         &self.dag.nodes[index].data
     }
+    pub fn get_basic_block_mut(&mut self, index: NodeIndex) -> &mut BasicBlock {
+        &mut self.dag.nodes.get_mut(index).unwrap().data
+    }
 }
 
 impl<'a> Dominators<'a> {
@@ -344,11 +351,9 @@ impl<'a> Dominators<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use bril_rs::Program;
     use indoc::indoc;
-
-    use super::*;
-
     use std::sync::LazyLock;
 
     static PROGRAM: LazyLock<Program> = LazyLock::new(|| {
