@@ -1,3 +1,5 @@
+pub mod ssa;
+
 use bril_rs::Function;
 use std::{
     collections::{HashMap, HashSet},
@@ -344,11 +346,9 @@ impl<'a> Dominators<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use bril_rs::Program;
     use indoc::indoc;
-
-    use super::*;
-
     use std::sync::LazyLock;
 
     static PROGRAM: LazyLock<Program> = LazyLock::new(|| {
