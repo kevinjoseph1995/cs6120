@@ -45,7 +45,13 @@ impl NodeEntry for BasicBlock {
 pub struct Dominators<'a> {
     cfg: &'a Cfg,
     // The dominator set for each node
-    set_per_node: Vec<HashSet<NodeIndex>>,
+    pub set_per_node: Vec<HashSet<NodeIndex>>,
+}
+
+pub struct DominanceFrontiers<'a> {
+    _dominators: &'a Dominators<'a>,
+    // The dominance frontier set for each node
+    pub set_per_node: Vec<HashSet<NodeIndex>>,
 }
 
 pub type NodeIndex = usize;
@@ -291,6 +297,49 @@ impl<'a> Dominators<'a> {
         }
         DirectedGraph { nodes }
     }
+
+    pub fn build_dom_frontiers(&self) -> DominanceFrontiers {
+        // This implementation is based on the paper "A Simple, Fast Dominance Algorithm" by Cooper et al.
+        // The details were explained in the following Youtube video: https://www.youtube.com/watch?v=q3YexEYB_ko
+        let cfg = self.cfg;
+        let dominator_tree = self.build_tree(); // The dominator tree is the immediate dominator tree
+
+        // The dominance frontier of a node n is the set of nodes where n is not a strict-dominator but has a predecessor that is a dominator
+        let mut dominance_frontiers: Vec<HashSet<NodeIndex>> =
+            vec![HashSet::new(); cfg.dag.number_of_nodes()]; // DF(X) = ∅
+
+        // Post order traversal of the dominator tree
+        for node_index in dominator_tree.get_post_order() {
+            // Compute DF_local(X)
+            //         DF_local(X) = {Y ∈ succ(X) | idom(Y) ≠ X}
+            // In other words the local dominance frontier of a node X is the set of all successors of X where X is not the immediate dominator of Y
+            for succsessor_index in cfg.dag.get_successor_indices(node_index) {
+                // If X is not the immediate dominator of Y
+                if !dominator_tree
+                    .get_successor_indices(node_index)
+                    .contains(succsessor_index)
+                {
+                    dominance_frontiers[node_index].insert(*succsessor_index);
+                }
+            }
+            // For each child(Z) of X(in the dominator tree)
+            //         For each Y ∈ DF(Z)
+            //             If idom(Y) ≠ X; then DF(X) = DF(X) ∪ {Y}
+            for child in dominator_tree.get_successor_indices(node_index) {
+                let mut dominator_up: Vec<usize> = Vec::new();
+                for y in dominance_frontiers[*child].iter() {
+                    if !dominator_tree.get_successor_indices(node_index).contains(y) {
+                        dominator_up.push(*y);
+                    }
+                }
+                dominance_frontiers[node_index].extend(dominator_up);
+            }
+        }
+        DominanceFrontiers {
+            _dominators: self,
+            set_per_node: dominance_frontiers,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -415,6 +464,27 @@ mod tests {
                 assert!(node_dominators.contains(&5));
             }
         }
-        println!("{}", dominators.build_tree().get_dot_representation());
+
+        let domination_frontiers = dominators.build_dom_frontiers();
+        for node in 0..cfg.dag.number_of_nodes() {
+            let node_frontiers = &domination_frontiers.set_per_node[node];
+            if cfg.dag.get_node_name(node) == "entry" {
+                assert_eq!(node_frontiers.len(), 0);
+            } else if cfg.dag.get_node_name(node) == "loop" {
+                assert_eq!(node_frontiers.len(), 1);
+                assert!(node_frontiers.contains(&1));
+            } else if cfg.dag.get_node_name(node) == "body" {
+                assert_eq!(node_frontiers.len(), 1);
+                assert!(node_frontiers.contains(&1));
+            } else if cfg.dag.get_node_name(node) == "then" {
+                assert_eq!(node_frontiers.len(), 1);
+                assert!(node_frontiers.contains(&4));
+            } else if cfg.dag.get_node_name(node) == "endif" {
+                assert_eq!(node_frontiers.len(), 1);
+                assert!(node_frontiers.contains(&1));
+            } else if cfg.dag.get_node_name(node) == "exit" {
+                assert_eq!(node_frontiers.len(), 0);
+            }
+        }
     }
 }
