@@ -121,7 +121,7 @@ impl<'a> SsaConverter<'a> {
     /// Creates a new instance of the SsaConverter.
     fn new(input_cfg: &'a Cfg) -> Self {
         let dominators: Dominators<'a> = Dominators::new(input_cfg);
-        let dominator_tree: DirectedGraph<BasicBlock> = dominators.build_tree();
+        let dominator_tree: DirectedGraph<BasicBlock> = dominators.build_dom_tree();
         let domination_frontiers: DominanceFrontiers<'_> = dominators.build_dom_frontiers();
         let per_variables_phi_insertion_sites: HashMap<String, (bril_rs::Type, Vec<usize>)> =
             extract_variable_definition_sites(input_cfg)

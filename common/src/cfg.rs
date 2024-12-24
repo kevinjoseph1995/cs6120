@@ -287,19 +287,26 @@ impl<'a> Dominators<'a> {
         }
     }
 
-    pub fn build_tree(&self) -> DirectedGraph<BasicBlock> {
+    pub fn build_dom_tree(&self) -> DirectedGraph<BasicBlock> {
         let mut nodes = self.cfg.dag.nodes.clone();
         for node_index in 0..nodes.len() {
-            let mut current_predecessors: HashSet<NodeIndex> = HashSet::new();
-            current_predecessors.extend(nodes[node_index].predecessor_indices.iter());
             nodes[node_index].predecessor_indices.clear();
             nodes[node_index].successor_indices.clear();
-            let dominator_set = &self.set_per_node[node_index];
-            for dominator in dominator_set.intersection(&current_predecessors) {
-                if *dominator != node_index {
-                    nodes[*dominator].successor_indices.push(node_index);
-                    nodes[node_index].predecessor_indices.push(*dominator);
+        }
+        for node_index in 0..nodes.len() {
+            let mut current_dominator_set = self.set_per_node[node_index].clone();
+            current_dominator_set.remove(&node_index); // Remove trivial dominators
+            let mut nodes_to_exclude: HashSet<usize> = HashSet::new();
+            for dominator in &current_dominator_set {
+                let mut other_dominators = self.set_per_node[*dominator].clone();
+                other_dominators.remove(&dominator); // Remove trivial dominators
+                for node_to_exclude in current_dominator_set.intersection(&other_dominators) {
+                    nodes_to_exclude.insert(*node_to_exclude);
                 }
+            }
+            for node in current_dominator_set.difference(&nodes_to_exclude) {
+                nodes[*node].successor_indices.push(node_index);
+                nodes[node_index].predecessor_indices.push(*node);
             }
         }
         DirectedGraph { nodes }
@@ -309,7 +316,7 @@ impl<'a> Dominators<'a> {
         // This implementation is based on the paper "A Simple, Fast Dominance Algorithm" by Cooper et al.
         // The details were explained in the following Youtube video: https://www.youtube.com/watch?v=q3YexEYB_ko
         let cfg = self.cfg;
-        let dominator_tree = self.build_tree(); // The dominator tree is the immediate dominator tree
+        let dominator_tree = self.build_dom_tree(); // The dominator tree is the immediate dominator tree
 
         // The dominance frontier of a node n is the set of nodes where n is not a strict-dominator but has a predecessor that is a dominator
         let mut dominance_frontiers: Vec<HashSet<NodeIndex>> =
