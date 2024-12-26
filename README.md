@@ -1,6 +1,6 @@
 # CS 6120 — Advanced Compilers Project
 
-This repository contains my personal projects and experiments while taking **CS 6120 (Advanced Compilers)**. The goal is to deepen my understanding of compiler construction, optimizations, and advanced language processing techniques by implementing various components of a compiler toolchain.
+This repository contains my personal projects and experiments while taking [**CS 6120 (Advanced Compilers)**](https://www.cs.cornell.edu/courses/cs6120/2023fa/self-guided/). The goal is to deepen my understanding of compiler construction, optimizations, and advanced language processing techniques by implementing various components of a compiler toolchain.
 ```
 .
 ├── bril                                          // Submodule to a forked version of https://github.com/sampsyo/bril
