@@ -387,6 +387,9 @@ pub fn convert_to_ssa(program: Program) -> Program {
 }
 
 fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
+    // ------------------------------------------------------
+    // 1. Build a map from label (node name) to its index.
+    // ------------------------------------------------------
     let label_to_node_index: HashMap<String, usize> = cfg
         .dag
         .nodes
@@ -394,13 +397,23 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
         .enumerate()
         .map(|(index, node)| (node.name.clone(), index))
         .collect();
+
+    // ------------------------------------------------------
+    // 2. Iterate over each node, extract PHI nodes if any.
+    // ------------------------------------------------------
     for node_index in 0..cfg.dag.number_of_nodes() {
+        // Extract PHI instructions from the current node,
+        // leaving behind any other instructions.
         let (phi_nodes, remaining_instructions) =
             ssa::extract_phi_nodes(cfg.get_basic_block(node_index).clone());
+
+        // If there are no PHI nodes here, skip to the next node.
         if phi_nodes.is_empty() {
             continue;
         }
-        let current_node_name = cfg.dag.get_node_name(node_index).to_string();
+
+        // This map will hold any newly created nodes needed
+        // to move PHI operations into separate basic blocks.
         let mut nodes_to_insert: HashMap<
             (
                 usize, /* Predecessor Index */
@@ -408,18 +421,28 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
             ),
             (BasicBlock, String /* Successor name */),
         > = HashMap::new();
+
+        // ------------------------------------------------------
+        // 3. For each PHI instruction, create new blocks
+        //    for the necessary predecessor edges.
+        // ------------------------------------------------------
         for phi_node in phi_nodes {
             let (args, dest, labels, op_type) = ssa::extract_phi_node_instrction(&phi_node);
             assert_eq!(args.len(), labels.len());
+
             for (arg, label) in args.iter().zip(labels.iter()) {
                 let new_block_predecessor_index = *label_to_node_index
                     .get(label)
                     .expect(format!("Did not find label {} in map", label).as_str());
                 let new_block_successor_index = node_index;
+
+                // Construct a new block name that includes the old predecessor and successor
                 let new_block_name = format!(
                     "{}_{}",
                     new_block_predecessor_index, new_block_successor_index
                 );
+
+                // Accumulate instructions in the new block's instruction stream
                 nodes_to_insert
                     .entry((new_block_predecessor_index, new_block_successor_index))
                     .or_insert((
@@ -427,7 +450,7 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
                             name: Some(new_block_name.clone()),
                             instruction_stream: vec![],
                         },
-                        current_node_name.clone(),
+                        cfg.dag.get_node_name(node_index).to_string(),
                     ))
                     .0
                     .instruction_stream
@@ -442,9 +465,14 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
                     });
             }
         }
+
+        // Put back the remaining (non-PHI) instructions into the current block
         cfg.get_basic_block_mut(node_index).instruction_stream = remaining_instructions;
 
-        // Add a return instruction to the last node
+        // ------------------------------------------------------
+        // 4. Add a return instruction to the last node if needed.
+        //    (Ensures final node ends properly.)
+        // ------------------------------------------------------
         let add_return: bool = {
             match cfg
                 .dag
@@ -471,7 +499,6 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
                 _ => true,
             }
         };
-
         if add_return {
             cfg.dag
                 .nodes
@@ -488,9 +515,19 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
                 });
         }
 
+        // ------------------------------------------------------
+        // 5. Insert newly created PHI-blocks into the CFG,
+        //    rewiring edges from old predecessors to these
+        //    new blocks, and then from the new blocks to the
+        //    original successor.
+        // ------------------------------------------------------
         for ((predecessor_index, successor_index), (block, successor_name)) in nodes_to_insert {
             let mut insert_jump = false;
             let new_node_name = block.name.clone().unwrap();
+
+            // Update the instruction in the predecessor block
+            // so that it no longer jumps/branches directly to the
+            // original successor. Instead, it points to the new block.
             match cfg.dag.nodes[predecessor_index]
                 .data
                 .instruction_stream
@@ -518,10 +555,12 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
                 } => {
                     labels[0] = new_node_name.clone();
                 }
+                // If none of the above, we need to insert a jump.
                 _ => {
                     insert_jump = true;
                 }
             }
+
             if insert_jump {
                 cfg.dag.nodes[predecessor_index]
                     .data
@@ -535,6 +574,7 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
                     });
             }
 
+            // Remove the direct connection between predecessor and successor...
             let index_to_remove = cfg.dag.nodes[predecessor_index]
                 .successor_indices
                 .iter()
@@ -543,6 +583,7 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
             cfg.dag.nodes[predecessor_index]
                 .successor_indices
                 .remove(index_to_remove);
+
             let index_to_remove = cfg.dag.nodes[successor_index]
                 .predecessor_indices
                 .iter()
@@ -551,6 +592,8 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
             cfg.dag.nodes[successor_index]
                 .predecessor_indices
                 .remove(index_to_remove);
+
+            // Create a new node in the DAG for the newly built block.
             let new_node_index = cfg.dag.nodes.len();
             cfg.dag.nodes.push(Node {
                 name: new_node_name.clone(),
@@ -558,6 +601,8 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
                 successor_indices: SmallVec::new(),
                 predecessor_indices: SmallVec::new(),
             });
+
+            // The newly created block will jump to the original successor.
             cfg.dag.nodes[new_node_index]
                 .data
                 .instruction_stream
@@ -568,6 +613,9 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
                     args: vec![],
                     funcs: vec![],
                 });
+
+            // Now connect the new node properly:
+            // predecessor -> new_node -> successor
             cfg.dag.nodes[predecessor_index]
                 .successor_indices
                 .push(new_node_index);
@@ -582,6 +630,10 @@ fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
                 .push(new_node_index);
         }
     }
+
+    // ------------------------------------------------------
+    // 6. Return the transformed CFG.
+    // ------------------------------------------------------
     cfg
 }
 
