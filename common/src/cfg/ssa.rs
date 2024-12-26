@@ -1,11 +1,11 @@
+use bril_rs::{Instruction, Type, ValueOps};
+
 use super::{Cfg, DirectedGraph, DominanceFrontiers};
 use crate::{cfg::Dominators, BasicBlock};
-use bril_rs::{Code, Program};
 use std::collections::{HashMap, HashSet};
 
-struct SsaConverter<'a> {
-    _input_cfg: &'a Cfg,                                            // The input cfg.
-    cfg: Cfg, // The cfg in ssa form, to be built incrementally.
+pub struct SsaBuilderState {
+    cfg: Cfg,                                  // The cfg in ssa form, to be built incrementally.
     dominator_tree: DirectedGraph<BasicBlock>, // The dominator-tree of the input cfg.
     per_variable_stack: HashMap<String, Vec<String>>, // The stack of names for each variable. The top of the stack is the latest version of the variable.
     per_variable_index: HashMap<String, usize>, // A map from variable name to the index of the next version of the variable.
@@ -117,14 +117,14 @@ fn generate_phi_nodes_per_block(
     phi_nodes_per_block
 }
 
-impl<'a> SsaConverter<'a> {
+impl SsaBuilderState {
     /// Creates a new instance of the SsaConverter.
-    fn new(input_cfg: &'a Cfg) -> Self {
-        let dominators: Dominators<'a> = Dominators::new(input_cfg);
+    pub fn new(cfg: Cfg) -> Self {
+        let dominators = Dominators::new(&cfg);
         let dominator_tree: DirectedGraph<BasicBlock> = dominators.build_dom_tree();
         let domination_frontiers: DominanceFrontiers<'_> = dominators.build_dom_frontiers();
         let per_variables_phi_insertion_sites: HashMap<String, (bril_rs::Type, Vec<usize>)> =
-            extract_variable_definition_sites(input_cfg)
+            extract_variable_definition_sites(&cfg)
                 .into_iter()
                 .map(|(variable, (type_t, definition_sites))| {
                     let insertion_sites = get_phi_insertion_sites_for_variable(
@@ -135,7 +135,7 @@ impl<'a> SsaConverter<'a> {
                 })
                 .collect();
         let phi_nodes_per_block =
-            generate_phi_nodes_per_block(input_cfg, &per_variables_phi_insertion_sites);
+            generate_phi_nodes_per_block(&cfg, &per_variables_phi_insertion_sites);
         let per_variable_stack: HashMap<String, Vec<String>> = per_variables_phi_insertion_sites
             .iter()
             .map(|(variable, _)| (variable.clone(), vec![variable.clone()]))
@@ -144,9 +144,8 @@ impl<'a> SsaConverter<'a> {
             .iter()
             .map(|(variable, _)| (variable.clone(), 0))
             .collect();
-        SsaConverter {
-            _input_cfg: input_cfg,
-            cfg: input_cfg.clone(),
+        SsaBuilderState {
+            cfg,
             dominator_tree,
             per_variable_stack,
             per_variable_index,
@@ -270,7 +269,7 @@ impl<'a> SsaConverter<'a> {
         }
         self.per_variable_stack = per_variable_stack_snapshot;
     }
-    fn get_ssa_cfg(mut self) -> Cfg {
+    pub fn get_ssa_cfg(mut self) -> Cfg {
         self.rename_dfs(0);
         for (block, phi_nodes) in self.phi_nodes_per_block {
             let instruction_stream = self
@@ -285,151 +284,48 @@ impl<'a> SsaConverter<'a> {
     }
 }
 
-pub fn convert_to_ssa(program: Program) -> Program {
-    let mut ssa_form_program = program;
-    for function in ssa_form_program.functions.iter_mut() {
-        let cfg = Cfg::new(function);
-        let ssa_cfg = SsaConverter::new(&cfg).get_ssa_cfg();
-        function.instrs = ssa_cfg
-            .dag
-            .nodes
-            .into_iter()
-            .map(|node| {
-                let mut instructions: Vec<Code> = Vec::new();
-                instructions.push(Code::Label {
-                    label: node.name.clone(),
-                    pos: None,
-                });
-                let basic_block = node.data;
-                for instruction in basic_block.instruction_stream {
-                    instructions.push(Code::Instruction(instruction));
-                }
-                instructions
-            })
-            .flatten()
-            .collect::<Vec<Code>>();
-    }
-    ssa_form_program
-}
-
-pub fn convert_from_ssa(_ssa_cfg: &Cfg) -> Cfg {
-    todo!()
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::cfg::ssa::convert_to_ssa;
-    use bril_rs::Program;
-    use brilirs::{basic_block::BBProgram, interp};
-    use indoc::indoc;
-    use std::collections::HashSet;
-
-    fn get_program_output(program: Program, input_args: &[String]) -> String {
-        let bbprog: BBProgram = program.clone().try_into().expect("Invalid program");
-        let mut stdout = Vec::<u8>::new();
-        let mut stderr = Vec::<u8>::new();
-        let result = interp::execute_main(&bbprog, &mut stdout, input_args, true, &mut stderr);
-        if let Some(error) = result.err() {
-            eprintln!("{}", error);
-            panic!("Program execution failed");
-        }
-
-        String::from_utf8(stdout).unwrap()
-    }
-
-    fn is_ssa(program: &Program) -> bool {
-        let mut assigned: HashSet<&str> = HashSet::new();
-        for function in program.functions.iter() {
-            for instr in function.instrs.iter() {
-                if let bril_rs::Code::Instruction(instruction) = instr {
-                    if let bril_rs::Instruction::Value { dest, .. } = instruction {
-                        if assigned.contains(dest.as_str()) {
-                            return false;
-                        }
-                        assigned.insert(dest);
-                    } else if let bril_rs::Instruction::Constant { dest, .. } = instruction {
-                        if assigned.contains(dest.as_str()) {
-                            return false;
-                        }
-                        assigned.insert(dest);
-                    }
-                }
+/// Extracts the phi nodes and the remaining instructions in a basic block.
+pub fn extract_phi_nodes<'a>(
+    basic_block: BasicBlock,
+) -> (
+    Vec<Instruction>, /*Phi Instructions */
+    Vec<Instruction>, /*Remaining instructions in basic block */
+) {
+    basic_block
+        .instruction_stream
+        .into_iter()
+        .partition(|instruction| {
+            if let Instruction::Value {
+                op: bril_rs::ValueOps::Phi,
+                ..
+            } = instruction
+            {
+                true
+            } else {
+                false
             }
-        }
-        true
-    }
+        })
+}
 
-    #[test]
-    fn test_ssa_construction1() {
-        let program = crate::parse_bril_text(indoc! {"
-                @main(flag: bool) {
-                .entry:
-                  x: int = const 0;
-                  br flag .left .right;
-
-                .left:
-                  one: int = const 1;
-                  x: int = add x one;
-                  jmp .join;
-
-                .right:
-                  two: int = const 2;
-                  x: int = add x two;
-                  jmp .join;
-
-                .join:
-                  x: int = add x x;
-
-                .exit:
-                  print x;
-                }
-            "})
-        .unwrap();
-        let ssa_program = convert_to_ssa(program.clone());
-        assert!(is_ssa(&ssa_program), "{}", ssa_program);
-        assert!(
-            get_program_output(program, &["true".to_string()])
-                == get_program_output(ssa_program, &["true".to_string()])
-        );
-    }
-
-    #[test]
-    fn test_ssa_construction2() {
-        let program = crate::parse_bril_text(indoc! {"
-        @main {
-            .entry:
-              x: int = const 0;
-              i: int = const 0;
-              one: int = const 1;
-
-            .loop:
-              max: int = const 10;
-              cond: bool = lt i max;
-              br cond .body .exit;
-
-            .body:
-              mid: int = const 5;
-              cond: bool = lt i mid;
-              br cond .then .endif;
-
-            .then:
-              x: int = add x one;
-              jmp .endif;
-
-            .endif:
-              factor: int = const 2;
-              x: int = mul x factor;
-
-              i: int = add i one;
-              jmp .loop;
-
-            .exit:
-              print x;
-        }
-            "})
-        .unwrap();
-        let ssa_program = convert_to_ssa(program.clone());
-        assert!(is_ssa(&ssa_program), "{}", ssa_program);
-        assert!(get_program_output(program, &[]) == get_program_output(ssa_program, &[]));
+pub fn extract_phi_node_instrction(
+    instruction: &Instruction,
+) -> (
+    &Vec<std::string::String>,
+    &std::string::String,
+    &Vec<std::string::String>,
+    &Type,
+) {
+    if let Instruction::Value {
+        op: ValueOps::Phi,
+        args,
+        dest,
+        labels,
+        op_type,
+        ..
+    } = instruction
+    {
+        (args, dest, labels, op_type)
+    } else {
+        panic!("Expected Phi node")
     }
 }

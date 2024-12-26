@@ -1,13 +1,13 @@
-pub mod ssa;
+mod ssa;
 
-use bril_rs::Function;
+use crate::BasicBlock;
+use bril_rs::{Code, EffectOps, Program, ValueOps};
+use bril_rs::{Function, Instruction};
+use smallvec::SmallVec;
 use std::{
     collections::{HashMap, HashSet},
     vec,
 };
-
-use crate::BasicBlock;
-use smallvec::SmallVec;
 
 pub trait NodeEntry {
     fn get_textual_representation(&self) -> String {
@@ -356,11 +356,251 @@ impl<'a> Dominators<'a> {
     }
 }
 
+fn convert_cfg_to_instruction_stream(cfg: Cfg) -> Vec<Code> {
+    cfg.dag
+        .nodes
+        .into_iter()
+        .map(|node| {
+            let mut instructions: Vec<Code> = Vec::new();
+            instructions.push(Code::Label {
+                label: node.name.clone(),
+                pos: None,
+            });
+            let basic_block = node.data;
+            for instruction in basic_block.instruction_stream {
+                instructions.push(Code::Instruction(instruction));
+            }
+            instructions
+        })
+        .flatten()
+        .collect::<Vec<Code>>()
+}
+
+pub fn convert_to_ssa(program: Program) -> Program {
+    let mut ssa_form_program = program;
+    for function in ssa_form_program.functions.iter_mut() {
+        function.instrs = convert_cfg_to_instruction_stream(
+            ssa::SsaBuilderState::new(Cfg::new(function)).get_ssa_cfg(),
+        )
+    }
+    ssa_form_program
+}
+
+fn remove_phi_nodes(mut cfg: Cfg) -> Cfg {
+    let label_to_node_index: HashMap<String, usize> = cfg
+        .dag
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.name.clone(), index))
+        .collect();
+    for node_index in 0..cfg.dag.number_of_nodes() {
+        let (phi_nodes, remaining_instructions) =
+            ssa::extract_phi_nodes(cfg.get_basic_block(node_index).clone());
+        if phi_nodes.is_empty() {
+            continue;
+        }
+        let current_node_name = cfg.dag.get_node_name(node_index).to_string();
+        let mut nodes_to_insert: HashMap<
+            (
+                usize, /* Predecessor Index */
+                usize, /* Successor_index */
+            ),
+            (BasicBlock, String /* Successor name */),
+        > = HashMap::new();
+        for phi_node in phi_nodes {
+            let (args, dest, labels, op_type) = ssa::extract_phi_node_instrction(&phi_node);
+            assert_eq!(args.len(), labels.len());
+            for (arg, label) in args.iter().zip(labels.iter()) {
+                let new_block_predecessor_index = *label_to_node_index
+                    .get(label)
+                    .expect(format!("Did not find label {} in map", label).as_str());
+                let new_block_successor_index = node_index;
+                let new_block_name = format!(
+                    "{}_{}",
+                    new_block_predecessor_index, new_block_successor_index
+                );
+                nodes_to_insert
+                    .entry((new_block_predecessor_index, new_block_successor_index))
+                    .or_insert((
+                        BasicBlock {
+                            name: Some(new_block_name.clone()),
+                            instruction_stream: vec![],
+                        },
+                        current_node_name.clone(),
+                    ))
+                    .0
+                    .instruction_stream
+                    .push(Instruction::Value {
+                        args: vec![arg.clone()],
+                        dest: dest.clone(),
+                        funcs: vec![],
+                        labels: vec![],
+                        op: ValueOps::Id,
+                        pos: None,
+                        op_type: op_type.clone(),
+                    });
+            }
+        }
+        cfg.get_basic_block_mut(node_index).instruction_stream = remaining_instructions;
+
+        // Add a return instruction to the last node
+        let add_return: bool = {
+            match cfg
+                .dag
+                .nodes
+                .last()
+                .unwrap()
+                .data
+                .instruction_stream
+                .last()
+                .expect("Expected at least 1 instruction")
+            {
+                Instruction::Effect {
+                    op: EffectOps::Return,
+                    ..
+                }
+                | Instruction::Effect {
+                    op: EffectOps::Branch,
+                    ..
+                }
+                | Instruction::Effect {
+                    op: EffectOps::Jump,
+                    ..
+                } => false,
+                _ => true,
+            }
+        };
+
+        if add_return {
+            cfg.dag
+                .nodes
+                .last_mut()
+                .unwrap()
+                .data
+                .instruction_stream
+                .push(Instruction::Effect {
+                    op: EffectOps::Return,
+                    labels: vec![],
+                    pos: None,
+                    args: vec![],
+                    funcs: vec![],
+                });
+        }
+
+        for ((predecessor_index, successor_index), (block, successor_name)) in nodes_to_insert {
+            let mut insert_jump = false;
+            let new_node_name = block.name.clone().unwrap();
+            match cfg.dag.nodes[predecessor_index]
+                .data
+                .instruction_stream
+                .last_mut()
+                .unwrap()
+            {
+                Instruction::Effect {
+                    op: EffectOps::Branch,
+                    labels,
+                    ..
+                } => {
+                    let pos = labels.iter().position(|l| *l == successor_name).expect(
+                        format!(
+                            "Did not find label {} in list of labels: {:#?}",
+                            successor_name, labels
+                        )
+                        .as_str(),
+                    );
+                    labels[pos] = new_node_name.clone();
+                }
+                Instruction::Effect {
+                    op: EffectOps::Jump,
+                    labels,
+                    ..
+                } => {
+                    labels[0] = new_node_name.clone();
+                }
+                _ => {
+                    insert_jump = true;
+                }
+            }
+            if insert_jump {
+                cfg.dag.nodes[predecessor_index]
+                    .data
+                    .instruction_stream
+                    .push(Instruction::Effect {
+                        op: EffectOps::Jump,
+                        labels: vec![new_node_name.clone()],
+                        pos: None,
+                        args: vec![],
+                        funcs: vec![],
+                    });
+            }
+
+            let index_to_remove = cfg.dag.nodes[predecessor_index]
+                .successor_indices
+                .iter()
+                .position(|successor| *successor == successor_index)
+                .unwrap();
+            cfg.dag.nodes[predecessor_index]
+                .successor_indices
+                .remove(index_to_remove);
+            let index_to_remove = cfg.dag.nodes[successor_index]
+                .predecessor_indices
+                .iter()
+                .position(|predecessor| *predecessor == predecessor_index)
+                .unwrap();
+            cfg.dag.nodes[successor_index]
+                .predecessor_indices
+                .remove(index_to_remove);
+            let new_node_index = cfg.dag.nodes.len();
+            cfg.dag.nodes.push(Node {
+                name: new_node_name.clone(),
+                data: block,
+                successor_indices: SmallVec::new(),
+                predecessor_indices: SmallVec::new(),
+            });
+            cfg.dag.nodes[new_node_index]
+                .data
+                .instruction_stream
+                .push(Instruction::Effect {
+                    op: EffectOps::Jump,
+                    labels: vec![successor_name],
+                    pos: None,
+                    args: vec![],
+                    funcs: vec![],
+                });
+            cfg.dag.nodes[predecessor_index]
+                .successor_indices
+                .push(new_node_index);
+            cfg.dag.nodes[new_node_index]
+                .predecessor_indices
+                .push(predecessor_index);
+            cfg.dag.nodes[new_node_index]
+                .successor_indices
+                .push(successor_index);
+            cfg.dag.nodes[successor_index]
+                .predecessor_indices
+                .push(new_node_index);
+        }
+    }
+    cfg
+}
+
+pub fn convert_from_ssa<'a>(ssa_program: Program) -> Program {
+    let mut program = ssa_program;
+    for function in program.functions.iter_mut() {
+        function.instrs = convert_cfg_to_instruction_stream(remove_phi_nodes(Cfg::new(function)))
+    }
+    program
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cfg::convert_to_ssa;
     use bril_rs::Program;
+    use brilirs::{basic_block::BBProgram, interp};
     use indoc::indoc;
+    use std::collections::HashSet;
     use std::sync::LazyLock;
 
     static PROGRAM: LazyLock<Program> = LazyLock::new(|| {
@@ -498,5 +738,119 @@ mod tests {
                 assert_eq!(node_frontiers.len(), 0);
             }
         }
+    }
+    fn get_program_output(program: Program, input_args: &[String]) -> String {
+        let bbprog: BBProgram = program.clone().try_into().expect("Invalid program");
+        let mut stdout = Vec::<u8>::new();
+        let mut stderr = Vec::<u8>::new();
+        let result = interp::execute_main(&bbprog, &mut stdout, input_args, true, &mut stderr);
+        if let Some(error) = result.err() {
+            eprintln!("{}", error);
+            panic!("Program execution failed");
+        }
+
+        String::from_utf8(stdout).unwrap()
+    }
+
+    fn is_ssa(program: &Program) -> bool {
+        let mut assigned: HashSet<&str> = HashSet::new();
+        for function in program.functions.iter() {
+            for instr in function.instrs.iter() {
+                if let bril_rs::Code::Instruction(instruction) = instr {
+                    if let bril_rs::Instruction::Value { dest, .. } = instruction {
+                        if assigned.contains(dest.as_str()) {
+                            return false;
+                        }
+                        assigned.insert(dest);
+                    } else if let bril_rs::Instruction::Constant { dest, .. } = instruction {
+                        if assigned.contains(dest.as_str()) {
+                            return false;
+                        }
+                        assigned.insert(dest);
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn test_ssa_construction1() {
+        let program = crate::parse_bril_text(indoc! {"
+                @main(flag: bool) {
+                .entry:
+                  x: int = const 0;
+                  br flag .left .right;
+
+                .left:
+                  one: int = const 1;
+                  x: int = add x one;
+                  jmp .join;
+
+                .right:
+                  two: int = const 2;
+                  x: int = add x two;
+                  jmp .join;
+
+                .join:
+                  x: int = add x x;
+
+                .exit:
+                  print x;
+                }
+            "})
+        .unwrap();
+        let ssa_program = convert_to_ssa(program.clone());
+        assert!(is_ssa(&ssa_program), "{}", ssa_program);
+        let output1 = get_program_output(program.clone(), &["true".to_string()]);
+        let output2 = get_program_output(ssa_program.clone(), &["true".to_string()]);
+        let output3 =
+            get_program_output(convert_from_ssa(ssa_program.clone()), &["true".to_string()]);
+        assert_eq!(output1, output2);
+        assert_eq!(output2, output3);
+    }
+
+    #[test]
+    fn test_ssa_construction2() {
+        let program = crate::parse_bril_text(indoc! {"
+        @main {
+            .entry:
+              x: int = const 0;
+              i: int = const 0;
+              one: int = const 1;
+
+            .loop:
+              max: int = const 10;
+              cond: bool = lt i max;
+              br cond .body .exit;
+
+            .body:
+              mid: int = const 5;
+              cond: bool = lt i mid;
+              br cond .then .endif;
+
+            .then:
+              x: int = add x one;
+              jmp .endif;
+
+            .endif:
+              factor: int = const 2;
+              x: int = mul x factor;
+
+              i: int = add i one;
+              jmp .loop;
+
+            .exit:
+              print x;
+        }
+            "})
+        .unwrap();
+        let ssa_program = convert_to_ssa(program.clone());
+        assert!(is_ssa(&ssa_program), "{}", ssa_program);
+        let output1 = get_program_output(program.clone(), &[]);
+        let output2 = get_program_output(ssa_program.clone(), &[]);
+        let output3 = get_program_output(convert_from_ssa(ssa_program.clone()), &[]);
+        assert_eq!(output1, output2);
+        assert_eq!(output2, output3);
     }
 }
