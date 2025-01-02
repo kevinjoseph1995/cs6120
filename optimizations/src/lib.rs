@@ -1,5 +1,6 @@
 mod local_dead_code_elimination;
 mod local_value_numbering;
+mod loop_invariant_code_motion;
 
 use std::vec;
 
@@ -10,6 +11,7 @@ use common::BasicBlock;
 pub enum OptimizationPass {
     LocalDeadCodeElimination,
     LocalValueNumbering,
+    LoopInvariantCodeMotion,
 }
 
 pub struct PassManager {
@@ -24,6 +26,9 @@ impl PassManager {
             }
             OptimizationPass::LocalValueNumbering => {
                 Box::new(local_value_numbering::LocalValueNumberingPass::new())
+            }
+            OptimizationPass::LoopInvariantCodeMotion => {
+                Box::new(loop_invariant_code_motion::LoopInvariantCodeMotionPass::new())
             }
         }
     }

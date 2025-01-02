@@ -49,6 +49,7 @@ impl NodeEntry for BasicBlock {
 pub struct Dominators<'a> {
     cfg: &'a Cfg,
     // The dominator set for each node
+    // If an element is present in set set_per_node[i] then it is a dominator of node i
     pub set_per_node: Vec<HashSet<NodeIndex>>,
 }
 
@@ -109,7 +110,7 @@ impl<Data: NodeEntry> DirectedGraph<Data> {
             let node_name = self.get_node_name(index);
             let node_text = self.nodes[index].data.get_textual_representation();
             statements.push(format!(
-                "\"{node_name}\" [shape=record, label=\"{node_name} | {node_text}\"]",
+                "\"{node_name}\" [shape=record, label=\"{node_name} \\| idx={index} | {node_text}\"]",
             ));
             // Add more information for each node
         }
@@ -356,7 +357,7 @@ impl<'a> Dominators<'a> {
     }
 }
 
-fn convert_cfg_to_instruction_stream(cfg: Cfg) -> Vec<Code> {
+pub fn convert_cfg_to_instruction_stream(cfg: Cfg) -> Vec<Code> {
     cfg.dag
         .nodes
         .into_iter()

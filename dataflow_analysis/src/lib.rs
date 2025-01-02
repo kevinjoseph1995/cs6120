@@ -19,7 +19,14 @@ enum Direction {
 }
 
 trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
-    fn run(&self, cfg: &'a Cfg, init: HashSet<ValueType>, direction: Direction) -> () {
+    fn run(
+        &self,
+        cfg: &'a Cfg,
+        init: HashSet<ValueType>,
+        direction: Direction,
+        display: Option<bool>,
+    ) -> (Vec<HashSet<ValueType>>, Vec<HashSet<ValueType>>) {
+        let display = display.unwrap_or(false);
         let all_predecessors: Vec<&[usize]> = (0..cfg.dag.number_of_nodes())
             .map(|node_index| cfg.dag.get_predecessor_indices(node_index))
             .collect();
@@ -57,7 +64,10 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
                 worklist.extend(output_edges[node_index]);
             }
         }
-        self.display(cfg, &input_list, &output_list);
+        if display {
+            self.display(cfg, &input_list, &output_list);
+        }
+        (input_list, output_list)
     }
 
     fn display(
@@ -127,11 +137,21 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
     ) -> HashSet<ValueType>;
 }
 
-struct LiveVariableAnalysis {}
+pub struct LiveVariableAnalysis {}
+
+impl LiveVariableAnalysis {
+    pub fn run_analysis<'a>(
+        &self,
+        cfg: &'a Cfg,
+        display: Option<bool>,
+    ) -> (Vec<HashSet<&'a str>>, Vec<HashSet<&'a str>>) {
+        self.run(cfg, HashSet::new(), Direction::Backward, display)
+    }
+}
 
 #[derive(Derivative)]
 #[derivative(Eq, PartialEq, Hash)]
-struct Definition<'a> {
+pub struct Definition<'a> {
     destination_variable: &'a str,
     basic_block_index: usize,
     instruction_index: usize,
@@ -152,7 +172,17 @@ impl Clone for Definition<'_> {
     }
 }
 
-struct ReachingDefinitions {}
+pub struct ReachingDefinitions {}
+
+impl ReachingDefinitions {
+    pub fn run_analysis<'a>(
+        &self,
+        cfg: &'a Cfg,
+        display: Option<bool>,
+    ) -> (Vec<HashSet<Definition<'a>>>, Vec<HashSet<Definition<'a>>>) {
+        self.run(cfg, HashSet::new(), Direction::Forward, display)
+    }
+}
 
 impl<'a> Analysis<'a, &'a str> for LiveVariableAnalysis {
     fn merge(
@@ -313,14 +343,10 @@ pub fn run_analysis(dataflow_analysis_name: DataflowAnalyses, program: &Program)
         .map(|f| (f, Cfg::new(f)))
         .for_each(|(f, cfg)| match dataflow_analysis_name {
             DataflowAnalyses::LiveVariable => {
-                LiveVariableAnalysis {}.run(&cfg, HashSet::new(), Direction::Backward);
+                let _ = LiveVariableAnalysis {}.run_analysis(&cfg, Some(true));
             }
             DataflowAnalyses::ReachingDefinitions => {
-                ReachingDefinitions {}.run(
-                    &cfg,
-                    create_set_of_definitions_from_function_arguments(&cfg, &f.args),
-                    Direction::Forward,
-                );
+                let _ = ReachingDefinitions {}.run_analysis(&cfg, Some(true));
             }
         });
 }

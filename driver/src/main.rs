@@ -16,7 +16,10 @@ struct Args {
     #[arg(short, long, value_enum, help = "Type of dataflow analysis to run")]
     dataflow_analysis: Option<DataflowAnalyses>,
 
-    #[arg(long, help = "Dump the AST as a DOT file")]
+    #[arg(
+        long,
+        help = "Dump the AST of each function in the program as DOT/Graphviz format"
+    )]
     dump_ast_as_dot: bool,
 
     #[arg(long, help = "Output the program after optimizations")]
