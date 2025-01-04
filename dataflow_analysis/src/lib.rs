@@ -94,7 +94,11 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
                 if formatted_values.is_empty() {
                     "∅".to_string()
                 } else {
-                    formatted_values.join(", ")
+                    formatted_values
+                        .chunks(3)
+                        .map(|chunk| format!("     {}", chunk.join(", ")))
+                        .collect::<Vec<String>>()
+                        .join("\\n")
                 }
             });
             let formatted_values: Vec<String> = outputs[index]
@@ -105,11 +109,15 @@ trait Analysis<'a, ValueType: Clone + Hash + Eq + Display> {
                 if formatted_values.is_empty() {
                     "∅".to_string()
                 } else {
-                    formatted_values.join(", ")
+                    formatted_values
+                        .chunks(3)
+                        .map(|chunk| format!("  {}", chunk.join(", ")))
+                        .collect::<Vec<String>>()
+                        .join("\\n")
                 }
             });
             statements.push(format!(
-                "\"{node_name}\" [shape=record, label=\"{node_name} \\n {in_} {out}| {node_text}\"]",
+                "\"{node_name}\" [shape=record, label=\"{node_name}:{index} \\n {in_} \\n {out}| {node_text}\"]",
             ));
         }
         // Add edge statements
@@ -245,7 +253,11 @@ impl<'a> Analysis<'a, &'a str> for LiveVariableAnalysis {
 
 impl std::fmt::Display for Definition<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.destination_variable)
+        write!(
+            f,
+            "{};B={};I={}",
+            self.destination_variable, self.basic_block_index, self.instruction_index
+        )
     }
 }
 
@@ -317,23 +329,6 @@ impl<'a> Analysis<'a, Definition<'a>> for ReachingDefinitions {
         }
         return output;
     }
-}
-
-fn create_set_of_definitions_from_function_arguments<'a>(
-    cfg: &'a Cfg,
-    function_arguments: &'a Vec<Argument>,
-) -> HashSet<Definition<'a>> {
-    function_arguments
-        .iter()
-        .enumerate()
-        .map(|(index, arg)| Definition {
-            destination_variable: &arg.name,
-            basic_block_index: 0,
-            instruction_index: 0,
-            arg_index: Some(index),
-            cfg,
-        })
-        .collect()
 }
 
 pub fn run_analysis(dataflow_analysis_name: DataflowAnalyses, program: &Program) -> () {

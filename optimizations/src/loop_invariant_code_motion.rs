@@ -6,8 +6,8 @@ use std::collections::HashSet;
 pub struct LoopInvariantCodeMotionPass {}
 
 impl Pass for LoopInvariantCodeMotionPass {
-    fn apply(&mut self, mut program: bril_rs::Program) -> bril_rs::Program {
-        let mut output_program = cfg::convert_to_ssa(program);
+    fn apply(&mut self, program: bril_rs::Program) -> bril_rs::Program {
+        let mut output_program = program;
         for function in output_program.functions.iter_mut() {
             function.instrs = common::cfg::convert_cfg_to_instruction_stream(
                 self.process_cfg(Cfg::new(function)),
@@ -76,7 +76,7 @@ impl LoopInvariantCodeMotionPass {
         // Precondition: We make the assumption that the CFG is reducible.
         let dominators = cfg::Dominators::new(&cfg);
         let (reaching_definitions_in, reaching_definitions_out) =
-            ReachingDefinitions {}.run_analysis(&cfg, Some(false));
+            ReachingDefinitions {}.run_analysis(&cfg, Some(true));
         find_back_edges(&cfg, &dominators)
             .iter()
             .map(|(src, loop_header)| {
