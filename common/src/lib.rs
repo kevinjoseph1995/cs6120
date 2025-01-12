@@ -1,12 +1,26 @@
 pub mod cfg;
 
 use bril_rs::{Code, Instruction, Program};
+use brilirs::{basic_block::BBProgram, interp};
 use std::{error::Error, fmt::Display};
 
 #[derive(Debug, Clone)]
 pub struct BasicBlock {
     pub name: Option<String>,
     pub instruction_stream: Vec<Instruction>,
+}
+
+pub fn get_program_output(program: Program, input_args: &[String]) -> String {
+    let bbprog: BBProgram = program.clone().try_into().expect("Invalid program");
+    let mut stdout = Vec::<u8>::new();
+    let mut stderr = Vec::<u8>::new();
+    let result = interp::execute_main(&bbprog, &mut stdout, input_args, true, &mut stderr);
+    if let Some(error) = result.err() {
+        eprintln!("{}", error);
+        panic!("Program execution failed");
+    }
+
+    String::from_utf8(stdout).unwrap()
 }
 
 pub fn construct_basic_block_stream<'a>(instructions: &'a [Code]) -> Vec<BasicBlock> {

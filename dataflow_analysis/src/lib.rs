@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hash;
 
-use bril_rs::{Argument, Program};
+use bril_rs::Program;
 use clap::ValueEnum;
 use common::cfg::{Cfg, NodeIndex};
 use derivative::Derivative;
@@ -158,13 +158,13 @@ impl LiveVariableAnalysis {
 }
 
 #[derive(Derivative)]
-#[derivative(Eq, PartialEq, Hash)]
+#[derivative(Eq, PartialEq, Hash, Debug)]
 pub struct Definition<'a> {
-    destination_variable: &'a str,
-    basic_block_index: usize,
-    instruction_index: usize,
-    arg_index: Option<usize>,
-    #[derivative(PartialEq = "ignore", Hash = "ignore")]
+    pub destination_variable: &'a str,
+    pub basic_block_index: usize,
+    pub instruction_index: usize,
+    pub arg_index: Option<usize>,
+    #[derivative(PartialEq = "ignore", Hash = "ignore", Debug = "ignore")]
     cfg: &'a Cfg,
 }
 
@@ -335,8 +335,8 @@ pub fn run_analysis(dataflow_analysis_name: DataflowAnalyses, program: &Program)
     program
         .functions
         .iter()
-        .map(|f| (f, Cfg::new(f)))
-        .for_each(|(f, cfg)| match dataflow_analysis_name {
+        .map(|f| Cfg::new(f))
+        .for_each(|cfg| match dataflow_analysis_name {
             DataflowAnalyses::LiveVariable => {
                 let _ = LiveVariableAnalysis {}.run_analysis(&cfg, Some(true));
             }

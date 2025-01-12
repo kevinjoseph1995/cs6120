@@ -231,6 +231,86 @@ impl Cfg {
     pub fn get_basic_block_mut(&mut self, index: NodeIndex) -> &mut BasicBlock {
         &mut self.dag.nodes.get_mut(index).unwrap().data
     }
+
+    pub fn insert_new_parent(
+        &mut self,
+        index: NodeIndex,
+        mut node_data: BasicBlock,
+        new_node_name: String,
+    ) {
+        let node_name = self.dag.get_node_name(index).to_string();
+        node_data.instruction_stream.push(Instruction::Effect {
+            op: bril_rs::EffectOps::Jump,
+            args: vec![],
+            funcs: vec![],
+            labels: vec![self.dag.get_node_name(index).to_string()],
+            pos: None,
+        });
+        let new_node_index = self.dag.nodes.len();
+        self.dag.nodes.push(Node {
+            data: node_data,
+            name: new_node_name.clone(),
+            successor_indices: SmallVec::new(),
+            predecessor_indices: SmallVec::new(),
+        });
+        let current_node_parents = self.dag.nodes[index].predecessor_indices.clone();
+        for parent_index in current_node_parents.iter() {
+            {
+                let parent = &mut self.dag.nodes[*parent_index];
+                let successor_index = parent
+                    .successor_indices
+                    .iter()
+                    .position(|successor| *successor == index)
+                    .unwrap();
+                parent.successor_indices[successor_index] = new_node_index;
+                self.dag.nodes[new_node_index]
+                    .predecessor_indices
+                    .push(*parent_index);
+            }
+            {
+                let parent_basic_block = &mut self.dag.nodes[*parent_index].data;
+                let mut insert_jmp = false;
+                match parent_basic_block
+                    .instruction_stream
+                    .last_mut()
+                    .expect("Expected at least 1 instruction")
+                {
+                    Instruction::Effect {
+                        op: bril_rs::EffectOps::Jump,
+                        labels,
+                        ..
+                    } => {
+                        // Update the jump label to the new node
+                        *labels = vec![new_node_name.clone()];
+                    }
+                    Instruction::Effect {
+                        op: bril_rs::EffectOps::Branch,
+                        labels,
+                        ..
+                    } => {
+                        // Update the branch label to the new node
+                        let pos = labels.iter().position(|l| *l == node_name);
+                        labels[pos.unwrap()] = new_node_name.clone();
+                    }
+                    _ => {
+                        insert_jmp = true;
+                    }
+                }
+                if insert_jmp {
+                    parent_basic_block
+                        .instruction_stream
+                        .push(Instruction::Effect {
+                            op: bril_rs::EffectOps::Jump,
+                            args: vec![],
+                            funcs: vec![],
+                            labels: vec![new_node_name.clone()],
+                            pos: None,
+                        });
+                }
+            }
+        }
+        self.dag.nodes[new_node_index].successor_indices.push(index);
+    }
 }
 
 impl<'a> Dominators<'a> {
@@ -650,8 +730,8 @@ pub fn convert_from_ssa<'a>(ssa_program: Program) -> Program {
 mod tests {
     use super::*;
     use crate::cfg::convert_to_ssa;
+    use crate::get_program_output;
     use bril_rs::Program;
-    use brilirs::{basic_block::BBProgram, interp};
     use indoc::indoc;
     use std::collections::HashSet;
     use std::sync::LazyLock;
@@ -791,18 +871,6 @@ mod tests {
                 assert_eq!(node_frontiers.len(), 0);
             }
         }
-    }
-    fn get_program_output(program: Program, input_args: &[String]) -> String {
-        let bbprog: BBProgram = program.clone().try_into().expect("Invalid program");
-        let mut stdout = Vec::<u8>::new();
-        let mut stderr = Vec::<u8>::new();
-        let result = interp::execute_main(&bbprog, &mut stdout, input_args, true, &mut stderr);
-        if let Some(error) = result.err() {
-            eprintln!("{}", error);
-            panic!("Program execution failed");
-        }
-
-        String::from_utf8(stdout).unwrap()
     }
 
     fn is_ssa(program: &Program) -> bool {
