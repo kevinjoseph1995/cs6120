@@ -49,7 +49,7 @@ impl NodeEntry for BasicBlock {
 pub struct Dominators<'a> {
     cfg: &'a Cfg,
     // The dominator set for each node
-    // If an element is present in set set_per_node[i] then it is a dominator of node i
+    // If an element x is present in set set_per_node[i] then it is a dominator of node i. That is x dominates i.
     pub set_per_node: Vec<HashSet<NodeIndex>>,
 }
 
@@ -237,6 +237,7 @@ impl Cfg {
         index: NodeIndex,
         mut node_data: BasicBlock,
         new_node_name: String,
+        parent_nodes_to_skip: HashSet<NodeIndex>,
     ) {
         let node_name = self.dag.get_node_name(index).to_string();
         node_data.instruction_stream.push(Instruction::Effect {
@@ -254,7 +255,10 @@ impl Cfg {
             predecessor_indices: SmallVec::new(),
         });
         let current_node_parents = self.dag.nodes[index].predecessor_indices.clone();
-        for parent_index in current_node_parents.iter() {
+        for parent_index in current_node_parents
+            .iter()
+            .filter(|p| !parent_nodes_to_skip.contains(p))
+        {
             {
                 let parent = &mut self.dag.nodes[*parent_index];
                 let successor_index = parent

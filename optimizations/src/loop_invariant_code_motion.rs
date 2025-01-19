@@ -5,7 +5,7 @@ use common::{
     BasicBlock,
 };
 use dataflow_analysis::{Definition, LiveVariableAnalysis, ReachingDefinitions};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct LoopInvariantCodeMotionPass {}
 
@@ -89,6 +89,7 @@ struct InstructionSite {
 struct LoopMetadata {
     loop_header: usize,                                // The index of the loop header.
     loop_invariant_instructions: Vec<InstructionSite>, // The set of loop invariant instructions.
+    loop_nodes: HashSet<usize>,                        // The set of nodes in the loop.
 }
 
 fn find_loop_invariant_instructions(
@@ -118,6 +119,7 @@ fn find_loop_invariant_instructions(
                         op: ValueOps::Phi, ..
                     } => continue,
                     bril_rs::Instruction::Value { args, dest, .. } => (args, dest),
+                    bril_rs::Instruction::Constant { dest, .. } => (&vec![], dest),
                     _ => continue,
                 };
                 if loop_invariant_instructions.contains(&InstructionSite {
@@ -128,43 +130,34 @@ fn find_loop_invariant_instructions(
                     // The instruction is already marked as loop invariant.
                     continue;
                 }
-                let defintion_sites = args
-                    .iter()
-                    .map(|arg| {
-                        let definition_sites = reaching_definitions_in[*loop_node]
-                            .iter()
-                            .filter(|definition| definition.destination_variable == *arg)
-                            .collect::<Vec<_>>();
-                        if definition_sites.len() == 1 {
-                            Some(definition_sites[0])
+                // A instruction is loop invariant when all of its arguments is either constant or variable "var" satisfying:
+                //      1. All reaching definitions of var are outside the loop.
+                //      2. There is exactly one reaching definition of var and the definition is loop-invariant.
+                let is_loop_invariant: bool = {
+                    args.is_empty() || // This is a constant instruction as there are no arguments
+                    args.iter().all(|argument| {
+                        let incoming_definitions = &reaching_definitions_in[*loop_node];
+                        let matching_definitions: Vec<&Definition> =
+                            incoming_definitions.iter().filter(|definition| {
+                                definition.destination_variable == argument
+                            }).collect();
+                        if matching_definitions.len() == 0 {
+                            return false
+                        } else if matching_definitions.len() > 1 {
+                            return false;
+                        } else if !loop_nodes.contains(&matching_definitions[0].basic_block_index) {
+                            return true;
                         } else {
-                            None
+                            let definition = &matching_definitions[0];
+                            // The argument is already marked as loop invariant
+                            return loop_invariant_instructions.contains(&InstructionSite {
+                                destination_variable: definition.destination_variable.to_string(),
+                                basic_block_index: definition.basic_block_index,
+                                instruction_index: definition.instruction_index
+                            });
                         }
                     })
-                    .collect::<Vec<_>>();
-                let is_loop_invariant = defintion_sites.iter().all(|definition| {
-                    if let Some(definition) = definition {
-                        if !loop_nodes.contains(&definition.basic_block_index) {
-                            // The definition is not in the loop.
-                            true
-                        } else if loop_invariant_instructions.iter().any(
-                            |site: &InstructionSite| {
-                                site.destination_variable == definition.destination_variable
-                                    && site.basic_block_index == definition.basic_block_index
-                                    && site.instruction_index == definition.instruction_index
-                            },
-                        ) {
-                            // The definition is in the loop, but it is already marked as loop invariant.
-                            true
-                        } else {
-                            // The definition is in the loop, but it is not marked as loop invariant.
-                            false
-                        }
-                    } else {
-                        // The definition is not found or there are multiple definitions.
-                        false
-                    }
-                });
+                };
                 if is_loop_invariant {
                     let site = InstructionSite {
                         destination_variable: dest.clone(),
@@ -201,10 +194,9 @@ fn filter_loop_invariant_instructions(
     // Need to filter the loop invariant instructions.
     // If the destination of an LII is d, it needs to satisfy the following condition:
     // 1. The instruction should not have any side effects(Already satisfied as the candidate instructions are Value instructions). ✅
-    // 2  There is only one definition of d in the loop (Already satisfied by being SSA). ✅
-    // 3. The definition of d dominates all uses of d in the loop (Already satisfied by being SSA). ✅
-
-    // 4. d's block dominates all loop exits. -> Not satisfied. ⏳
+    // 2  There is only one definition of d in the loop. ⏳
+    // 3. d's block dominates all loop exits. ⏳
+    // 4. The definition of d dominates all uses of d in the loop (Already satisfied by being SSA). ⏳
 
     // We need to find the loop exits.
     let loop_exits = loop_nodes
@@ -216,28 +208,114 @@ fn filter_loop_invariant_instructions(
         })
         .cloned()
         .collect::<HashSet<_>>();
+    let loop_defitntions = {
+        let mut loop_defitntions: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        loop_nodes
+            .iter()
+            .map(|loop_node| {
+                cfg.get_basic_block(*loop_node)
+                    .instruction_stream
+                    .iter()
+                    .filter(|instruction| match instruction {
+                        Instruction::Constant { .. } => true,
+                        Instruction::Value { .. } => true,
+                        Instruction::Effect { .. } => false,
+                    })
+                    .enumerate()
+                    .map(|(instruction_index, instruction)| match instruction {
+                        Instruction::Constant { dest, .. } => {
+                            (dest.clone(), instruction_index, *loop_node)
+                        }
+                        Instruction::Value { dest, .. } => {
+                            (dest.clone(), instruction_index, *loop_node)
+                        }
+                        _ => {
+                            panic!(
+                                "Unexpected effect instruction found in loop node: {:?}",
+                                instruction
+                            );
+                        }
+                    })
+            })
+            .flatten()
+            .for_each(|(dest, instruction_index, loop_node)| {
+                loop_defitntions
+                    .entry(dest)
+                    .or_insert_with(Vec::new)
+                    .push((loop_node, instruction_index));
+            });
+        loop_defitntions
+    };
+
+    let uses = {
+        let mut uses: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        (0..cfg.dag.number_of_nodes())
+            .map(|node| {
+                cfg.get_basic_block(node)
+                    .instruction_stream
+                    .iter()
+                    .filter(|instruction| match instruction {
+                        Instruction::Constant { .. } => false,
+                        Instruction::Value { .. } => true,
+                        Instruction::Effect { .. } => false,
+                    })
+                    .enumerate()
+                    .map(move |(instruction_index, instruction)| match instruction {
+                        Instruction::Value { args, .. } => (args.iter(), instruction_index, node),
+                        Instruction::Effect { args, .. } => (args.iter(), instruction_index, node),
+                        _ => panic!(
+                            "Unexpected constant instruction found in loop node: {:?}",
+                            instruction
+                        ),
+                    })
+            })
+            .flatten()
+            .for_each(|(args, instruction_index, loop_node)| {
+                args.for_each(|arg| {
+                    uses.entry(arg.to_string())
+                        .or_insert_with(Vec::new)
+                        .push((loop_node, instruction_index));
+                });
+            });
+        uses
+    };
 
     return instructions
         .into_iter()
         .filter(|instruction| {
-            // Check if the instruction satisfies the fourth condition.
             let instruction_block = instruction.basic_block_index;
+            let instruction_index = instruction.instruction_index;
             let destination_variable = instruction.destination_variable.as_str();
-            loop_exits.iter().all(|exit| {
-                if cfg
-                    .dag
-                    .get_successor_indices(*exit)
-                    .iter()
-                    .filter(|&successor| !loop_nodes.contains(successor))
-                    .any(|successor| live_variables_in[*successor].contains(destination_variable))
-                {
-                    // The destination variable is live at the exit.
-                    dominators.set_per_node[*exit].contains(&instruction_block)
-                } else {
-                    // The destination variable is not live at the exit.
-                    true
+            loop_defitntions[destination_variable].len() == 1 // There is only one definition of d in the loop ✅
+                && loop_exits.iter().all(|exit| { // d's block dominates all loop exits ✅
+                    if cfg
+                        .dag
+                        .get_successor_indices(*exit)
+                        .iter()
+                        .filter(|&successor| !loop_nodes.contains(successor))
+                        .any(|successor| {
+                            live_variables_in[*successor].contains(destination_variable)
+                        })
+                    {
+                        // The destination variable is live at the exit.
+                        dominators.set_per_node[*exit].contains(&instruction_block)
+                    } else {
+                        // The destination variable is not live at the exit.
+                        true
+                    }
+                }) && {
+                    if uses.contains_key(destination_variable) {
+                        uses[destination_variable].iter().all(|(use_block, use_index)| {
+                            // The definition of d dominates all uses of d in the loop ✅
+                            dominators.set_per_node[*use_block].contains(&instruction_block)
+                                || (instruction_block == *use_block
+                                    && instruction_index < *use_index) // The definition is before the use in the same block.
+                        })
+                    } else {
+                        // The destination variable is not used. So, it is safe to move it.
+                        true
+                    }
                 }
-            })
         })
         .collect();
 }
@@ -270,18 +348,29 @@ impl LoopInvariantCodeMotionPass {
                 LoopMetadata {
                     loop_header: *loop_header,
                     loop_invariant_instructions,
+                    loop_nodes,
                 }
             })
             .collect();
         for loop_metadata in loop_metadata_vector {
             let mut instructions = Vec::<Instruction>::new();
-            for site in loop_metadata.loop_invariant_instructions {
+            for site in &loop_metadata.loop_invariant_instructions {
                 let instruction = cfg
-                    .get_basic_block_mut(site.basic_block_index)
-                    .instruction_stream
-                    .remove(site.instruction_index);
+                    .get_basic_block(site.basic_block_index)
+                    .instruction_stream[site.instruction_index]
+                    .clone();
                 instructions.push(instruction);
             }
+            loop_metadata
+                .loop_invariant_instructions
+                .iter()
+                .for_each(|site| {
+                    let basic_block = cfg.get_basic_block_mut(site.basic_block_index);
+                    basic_block
+                        .instruction_stream
+                        .remove(site.instruction_index);
+                });
+
             let new_node_name = format!(
                 "preheader_{}",
                 cfg.dag.get_node_name(loop_metadata.loop_header)
@@ -293,6 +382,7 @@ impl LoopInvariantCodeMotionPass {
                     instruction_stream: instructions,
                 },
                 new_node_name,
+                loop_metadata.loop_nodes,
             );
         }
         cfg
@@ -344,6 +434,70 @@ mod tests {
             print temp66;
             print sum;
             ret;
+        }
+        "#});
+        let output_original = get_program_output(program.clone(), &[]);
+        let optimized_program = super::LoopInvariantCodeMotionPass::new().apply(program);
+        let output = get_program_output(optimized_program.clone(), &[]);
+        assert_eq!(output_original, output, "{}", optimized_program);
+    }
+
+    #[test]
+    fn test_loop_invariant_code_motion2() {
+        let program = parse_program(indoc::indoc! {r#"
+        @main {
+            #--------------------------------
+            # Constants
+            #--------------------------------
+            outerLimit: int = const 3;
+            innerLimit: int = const 2;
+            one: int       = const 1;
+            offset: int    = const 10;
+
+            #--------------------------------
+            # Variables
+            #--------------------------------
+            i: int   = const 0;
+            j: int   = const 0;
+            sum: int = const 0;
+
+            #--------------------------------
+            # Outer loop
+            #--------------------------------
+            .outerLoop:
+                condOuter: bool = lt i outerLimit;
+                br condOuter .outerBody .outerDone;
+
+            .outerBody:
+                # Reset j for the inner loop
+                j: int = const 0;
+
+                #-----------------------------
+                # Inner loop
+                #-----------------------------
+                .innerLoop:
+                    condInner: bool = lt j innerLimit;
+                    br condInner .innerBody .innerDone;
+
+                .innerBody:
+                    # Example partial-invariant expression for the inner loop
+                    temp: int = add i offset;     # i + offset is invariant wrt j
+                    sum: int  = add sum temp;     # Accumulate it
+                    sum: int  = add sum j;        # Also add j (changes each iteration of inner loop)
+
+                    # Increment j
+                    j: int = add j one;
+                    jmp .innerLoop;
+
+                .innerDone:
+                    # Increment i before repeating outer loop
+                    i: int = add i one;
+                    jmp .outerLoop;
+
+            .outerDone:
+                # Print sum and return
+                print sum;
+                ret;
         }
         "#});
         let output_original = get_program_output(program.clone(), &[]);
